@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bonsai J-Lens</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+:root {
+  --bg: #fbfaf7; --panel: #ffffff; --ink: #1d1b16; --muted: #6f6a5f; --line: #e4e0d6;
+  --accent: 214 80% 45%; --heat: 24 90% 50%; --sel: #1d1b16;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141412; --panel: #1c1c19; --ink: #ece8dd; --muted: #9a9486; --line: #2f2e29;
+    --accent: 210 85% 62%; --heat: 28 95% 58%; --sel: #ece8dd;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); height: 100vh; display: flex; flex-direction: column;
+  font: 14px/1.4 -apple-system, system-ui, sans-serif; }
+header { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+h1 { font-size: 15px; margin: 6px 12px 0 0; font-weight: 650; letter-spacing: .01em; }
+textarea { flex: 1 1 420px; min-height: 58px; font: 13px/1.4 var(--mono); padding: 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); resize: vertical; }
+.controls { display: flex; flex-direction: column; gap: 6px; }
+button, select, input[type=text] { font: inherit; padding: 5px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+button.primary { background: hsl(var(--accent)); color: white; border-color: transparent; font-weight: 600; }
+button:disabled { opacity: .5; }
+.status { color: var(--muted); font-size: 12px; min-height: 16px; }
+main { display: grid; grid-template-columns: 1fr 400px; flex: 1; min-height: 0; }
+#left { position: relative; min-height: 0; min-width: 0; }
+#gridwrap { overflow: auto; position: absolute; inset: 0; }
+#volwrap { position: absolute; inset: 0; display: none; overflow: hidden; }
+#volwrap canvas { display: block; cursor: grab; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 10px; }
+.seg button.on { background: var(--ink); color: var(--bg); }
+.vctl { position: absolute; top: 10px; left: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; font-size: 12px; z-index: 2; max-width: calc(100% - 20px); }
+.vctl label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.vctl select, .vctl button { padding: 2px 6px; font-size: 12px; }
+.vhelp { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: var(--muted); z-index: 2; pointer-events: none; }
+#spacewrap { position: absolute; inset: 0; display: none; overflow: hidden; }
+#spacewrap canvas { display: block; cursor: grab; }
+#splegend { position: absolute; right: 10px; bottom: 30px; z-index: 2; display: flex; flex-direction: column; gap: 2px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11px; }
+#splegend .lg { cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }
+#splegend .lg i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+#splegend .lg em { font-style: normal; color: var(--muted); margin-left: auto; padding-left: 8px; }
+#trlegend { position: absolute; left: 10px; bottom: 30px; z-index: 2; font-size: 11px; color: var(--muted); display: none;
+  background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+#trlegend .gr { height: 8px; width: 180px; border-radius: 4px; margin: 3px 0 1px; }
+#trlegend .ends { display: flex; justify-content: space-between; font: 10px var(--mono); gap: 8px; }
+#pbstrip { position: absolute; left: 10px; right: 10px; bottom: 22px; z-index: 2; display: none; flex-wrap: wrap; gap: 3px 2px;
+  max-height: 30%; overflow: auto; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent); font: 12px/1.2 var(--mono); }
+#pbstrip .pbt { display: inline-flex; flex-direction: column; align-items: flex-start; padding: 2px 3px; border-radius: 4px;
+  cursor: pointer; transition: opacity .15s; white-space: pre; }
+#pbstrip .pbt b { font-weight: 600; }
+#pbstrip .pbt i { font-style: normal; font-size: 10px; margin-top: 2px; padding: 0 3px; border-radius: 3px; color: var(--ink); }
+#pbstrip .pbt.gen b { font-style: italic; }
+#pbstrip .pbt.future { opacity: 0.12; }
+#pbstrip .pbt.nopred i { visibility: hidden; }
+#pbstrip .pbt.cur { outline: 1.5px solid var(--ink); background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.pbctl { display: inline-flex; gap: 4px; align-items: center; }
+.splab.cur { background: #fff; color: #111; font-weight: 700; }
+.splab.main { border: 1px solid currentColor; font-weight: 600; }
+#splegend .lg.off { opacity: .35; text-decoration: line-through; }
+.splab { font: 11px var(--mono); color: var(--ink); background: color-mix(in srgb, var(--panel) 80%, transparent);
+  padding: 1px 4px; border-radius: 3px; white-space: pre; pointer-events: none; transform: translateY(-12px); }
+.splab.foc { background: var(--ink); color: var(--bg); font-weight: 700; }
+.vlab { font: 10px var(--mono); color: var(--muted); white-space: pre; pointer-events: none; }
+.vlab.tok { transform: rotate(-50deg); transform-origin: right center; margin-left: -100%; color: var(--ink); }
+.vlab.tok.gen { color: hsl(var(--heat)); font-style: italic; }
+.vlab.rank { font-size: 9px; }
+table { border-collapse: separate; border-spacing: 0; font: 11px/1 var(--mono); }
+th, td { white-space: nowrap; }
+thead th { position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 6px 4px;
+  border-bottom: 1px solid var(--line); font-weight: 600; max-width: 84px; overflow: hidden; text-overflow: ellipsis; }
+tbody th { position: sticky; left: 0; z-index: 1; background: var(--panel); color: var(--muted);
+  padding: 0 8px; text-align: right; font-weight: 400; border-right: 1px solid var(--line); }
+thead th.corner { left: 0; z-index: 3; }
+td { width: 84px; max-width: 84px; height: 19px; padding: 0 4px; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; border-right: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+td.sel { outline: 2px solid var(--sel); outline-offset: -2px; }
+tr.out th, tr.out td { border-top: 2px solid var(--muted); }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 14px; }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+.row { display: grid; grid-template-columns: 1fr 52px 22px; gap: 6px; align-items: center; margin: 2px 0; font: 12px var(--mono); }
+.bar { height: 14px; border-radius: 3px; background: hsl(var(--accent) / .18); position: relative; overflow: hidden; }
+.bar span { position: absolute; inset: 0 auto 0 0; background: hsl(var(--accent) / .55); }
+.bar b { position: relative; padding-left: 4px; font-weight: 500; white-space: pre; }
+.pin { cursor: pointer; border: 0; background: none; color: var(--muted); padding: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 12px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); cursor: pointer; white-space: pre; }
+.chip.on { background: hsl(var(--heat)); color: white; border-color: transparent; }
+.chip i { font-style: normal; margin-left: 6px; opacity: .6; }
+.muted { color: var(--muted); font-size: 12px; }
+.legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin-top: 6px; }
+.xl { text-decoration: underline dotted color-mix(in srgb, var(--ink) 45%, transparent); text-underline-offset: 2px; }
+#tip { position: fixed; z-index: 10; pointer-events: none; display: none; max-width: 280px;
+  background: var(--ink); color: var(--bg); padding: 6px 9px; border-radius: 6px; font: 12px/1.35 -apple-system, system-ui, sans-serif;
+  box-shadow: 0 4px 16px rgb(0 0 0 / .25); }
+#tip .src { opacity: .6; font-size: 11px; }
+#tip .tok { font-family: var(--mono); }
+.gl { color: var(--muted); font: 11px -apple-system, system-ui, sans-serif; margin-left: 6px; }
+#colmap table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0 1px; font: 10px/1 var(--mono); }
+#colmap th { width: 30px; text-align: right; padding-right: 5px; color: var(--muted); font-weight: 400; position: static; background: none; }
+#colmap td { height: 12px; padding: 0 2px; max-width: none; width: auto; overflow: hidden; text-overflow: ellipsis;
+  border-right: 1px solid var(--panel); cursor: pointer; }
+#colmap tr.cur td { outline: 1.5px solid var(--sel); outline-offset: -1px; }
+#colmap tr.cur th { color: var(--ink); font-weight: 700; }
+#colmap tr.out th, #colmap tr.out td { border-top: 1.5px solid var(--muted); }
+#colmap td.same { box-shadow: inset 0 0 0 1.5px hsl(var(--heat)); }
+#colmap .ranks { display: grid; grid-template-columns: 30px repeat(10, 1fr); font: 10px var(--mono); color: var(--muted); text-align: center; }
+thead th.gen { color: hsl(var(--heat)); font-style: italic; }
+th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
+.gencontrols { display: flex; gap: 6px; align-items: center; }
+.gencontrols input { width: 64px; padding: 5px 6px; }
+#cont { flex-basis: 100%; display: none; font: 13px/1.5 var(--mono); padding: 8px 10px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+#cont .p { color: var(--muted); }
+#cont .g { color: var(--ink); background: hsl(var(--heat) / .18); border-radius: 3px; }
+#cont button { margin-left: 10px; font-size: 12px; padding: 2px 8px; vertical-align: baseline; }
+.legend .ramp { width: 120px; height: 8px; border-radius: 4px; }
+@media (max-width: 800px) { body { height: auto; } main { grid-template-columns: 1fr; } #left { height: 70vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bonsai J-Lens</h1>
+  <textarea id="prompt">Fact: The currency used in the country shaped like a boot is</textarea>
+  <div class="controls">
+    <button class="primary" id="run">Run ⌘↵</button>
+    <select id="lens"><option value="jacobian">Jacobian lens</option><option value="logit">Logit lens</option></select>
+    <div class="gencontrols" title="Greedy next-token prediction: append the single most likely token, N times, then run the lens on everything">
+      <input type="number" id="ntok" min="1" max="200" value="20" aria-label="tokens to generate">
+      <button id="gen">Continue</button>
+    </div>
+  </div>
+  <div class="seg" role="tablist" aria-label="View">
+    <button id="vGrid" class="on">Grid</button><button id="vVol">J-Volume</button><button id="vSpace">Space</button>
+  </div>
+  <div id="cont"></div>
+  <div class="status" id="status" style="flex-basis:100%"></div>
+</header>
+<main>
+  <div id="left">
+    <div id="gridwrap"><table id="grid"></table></div>
+    <div id="volwrap">
+      <div class="vctl">
+        <label>color <select id="vcolor"><option value="prob">probability</option><option value="token">token identity</option></select></label>
+        <label>show <input type="range" id="vthr" min="0" max="100" value="33" style="width:110px"> <span id="vthrv"></span></label>
+        <label><input type="checkbox" id="vactual"> highlight actual tokens</label>
+        <button id="vreset">reset view</button>
+      </div>
+      <div class="vhelp" id="volhelp">x = position · y = layer (L0 bottom → output top) · z = rank (1 in front) · drag to orbit, scroll to zoom, click a voxel to select</div>
+    </div>
+    <div id="spacewrap">
+      <div class="vctl">
+        <select id="spdim"><option value="3">3D</option><option value="2">2D</option></select>
+        <label>color <select id="spcolor"><option value="cat">token type</option><option value="norm">readout norm</option></select></label>
+        <input type="text" id="spsearch" placeholder="find token… ↵" title="Enter: highlight matching tokens. Click any point: show its 30 nearest neighbours." style="width:130px; padding:2px 6px; font-size:12px">
+        <button id="spclear">clear</button><span id="spcount"></span>
+        <span style="flex-basis:100%; height:0"></span>
+        <label title="Trace the current run through the space"><input type="checkbox" id="trOn" checked> trace run</label>
+        <label title="Readouts per cell to branch to">top-k <input type="number" id="trK" min="1" max="10" value="3" style="width:44px"></label>
+        <label title="Hide branches weaker than this">min p <input type="range" id="trP" min="0" max="100" value="30" style="width:90px"> <span id="trPv"></span></label>
+        <label title="Only branch to readouts from these layers (63 = model output)">layers <input type="number" id="trLo" min="0" max="63" value="20" style="width:48px">–<input type="number" id="trHi" min="0" max="63" value="63" style="width:48px"></label>
+        <label><input type="checkbox" id="trLab" checked> labels</label>
+        <span class="pbctl">
+          <button id="pbPlay" title="Replay token by token: layers pop in, rays converge on the output">▶ play</button>
+          <button id="pbStep" title="Play just the next token">⏭</button>
+          <button id="pbReset" title="Back to the static trace">⟲</button>
+          <select id="pbSpeed" title="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+          <span id="pbStatus" style="font:11px var(--mono); color:var(--muted)"></span>
+        </span>
+      </div>
+      <div id="trlegend"></div>
+      <div id="pbstrip"></div>
+      <div id="splegend"></div>
+      <div class="vhelp" id="spstatus"></div>
+    </div>
+  </div>
+  <aside>
+    <div id="detail" class="muted">Run a prompt, then click a cell to see the lens readout at that layer and position.</div>
+    <div id="colmap"></div>
+    <h2>Pinned tokens</h2>
+    <div style="display:flex; gap:6px; margin-bottom:8px">
+      <input type="text" id="pinText" placeholder="word to pin…" style="flex:1">
+      <button id="pinBtn">Pin</button>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="muted" style="margin-top:6px">Click a pinned token to color the grid by its rank (log scale) in every cell.</div>
+    <div class="legend" id="legend"></div>
+  </aside>
+</main>
+<div id="tip"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let data = null, sel = null, pins = [], rankOf = null, heatToken = null;
+const gloss = {};                       // token id -> {en, src}, merged across runs
+// Non-English = contains a non-ASCII *letter* (so curly quotes/dashes on English words don't count).
+const foreign = (s) => [...s].some((c) => c > "\x7F" && /\p{L}/u.test(c));
+
+const show = (s) => s.replace(/ /g, "␣").replace(/\n/g, "↵").replace(/\t/g, "⇥");
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+
+async function info() {
+  const i = await api("/api/info");
+  const L = i.lens || {};
+  $("status").textContent = L.n_prompts
+    ? `Lens fitted on ${L.n_prompts} prompts · ${i.fitted_layers.length} layers · d=${i.d_model}`
+    : "No Jacobian lens loaded yet: use the logit lens, or restart with --lens";
+  if (!L.n_prompts) $("lens").value = "logit";
+}
+
+async function run(generate = 0, reuse = {}) {
+  $("run").disabled = $("gen").disabled = true;
+  $("status").textContent = generate ? `Generating ${generate} tokens, then running the lens…` : "Running…";
+  try {
+    data = await api("/api/run", { prompt: $("prompt").value, lens: $("lens").value, k: 10, generate, ...reuse });
+    renderContinuation();
+    rankOf = null;
+    Object.assign(gloss, data.gloss || {});
+    if (heatToken !== null) await loadRanks();
+    if (sel && (sel[0] >= data.layers.length || sel[1] >= data.tokens.length)) sel = null;
+    render();
+    if (sel) { renderDetail(); renderColmap(); } else { $("detail").innerHTML = ""; renderColmap(); }
+    window.dispatchEvent(new Event("lens:data"));
+    const nGen = data.ids.length - data.n_prompt;
+    $("status").textContent = `${data.ids.length} tokens × ${data.layers.length} layers · ${$("lens").selectedOptions[0].text} · ${data.ms} ms` +
+      (nGen || generate ? ` · ${nGen} generated greedily in ${data.gen_ms} ms${data.stopped_early ? " (stopped at end-of-text)" : ""}` : "");
+  } catch (e) { $("status").textContent = "Error: " + e; }
+  $("run").disabled = $("gen").disabled = false;
+}
+
+// The prompt as the model tokenized it, followed by the greedy continuation.
+function renderContinuation() {
+  const el = $("cont");
+  if (!data || !data.continuation) { el.style.display = "none"; return; }
+  const prompt = data.tokens.slice(0, data.n_prompt).join("");
+  el.innerHTML = `<span class="p">${esc(prompt)}</span><span class="g">${esc(data.continuation)}</span><button id="append" title="Make the continuation part of the prompt, so Continue extends it further">Append to prompt</button>`;
+  el.style.display = "block";
+}
+
+async function loadRanks() {
+  if (!data || !pins.length) return;
+  const r = await api("/api/ranks", { token_ids: pins.map((p) => p.id), lens: $("lens").value });
+  rankOf = r.ranks;
+}
+
+function cellColor(li, t) {
+  const accent = css("--accent"), heat = css("--heat");
+  if (heatToken !== null && rankOf) {
+    const rank = rankOf[heatToken][li][t];
+    const a = Math.max(0, 1 - Math.log10(rank + 1) / 4); // rank 0 -> 1, rank 10^4 -> 0
+    return `hsl(${heat} / ${(a * 0.85).toFixed(3)})`;
+  }
+  const p = data.cells[li][t].p[0];
+  return `hsl(${accent} / ${(Math.sqrt(p) * 0.6).toFixed(3)})`;
+}
+
+function render() {
+  const g = $("grid");
+  if (!data) { g.innerHTML = ""; return; }
+  let h = `<thead><tr><th class="corner">layer</th>` +
+    data.tokens.map((s, t) => {
+      const g = t >= data.n_prompt;
+      const cls = [foreign(s) ? "xl" : "", g ? "gen" : "", t === data.n_prompt ? "gen0" : ""].join(" ");
+      return `<th data-tid="${data.ids[t]}" data-note="position ${t}${g ? " · generated" : ""}" class="${cls}">${esc(show(s))}</th>`;
+    }).join("") + `</tr></thead><tbody>`;
+  const last = data.layers.length - 1;
+  data.layers.forEach((l, li) => {
+    h += `<tr class="${li === last ? "out" : ""}"><th>${li === last ? "out" : "L" + l}</th>`;
+    for (let t = 0; t < data.tokens.length; t++) {
+      const c = data.cells[li][t];
+      const tok = data.vocab[c.ids[0]];
+      const isSel = sel && sel[0] === li && sel[1] === t;
+      const cls = [isSel ? "sel" : "", foreign(tok) ? "xl" : "", t === data.n_prompt ? "gen0" : ""].join(" ");
+      h += `<td data-li="${li}" data-t="${t}" data-tid="${c.ids[0]}" data-note="p = ${c.p[0]}" class="${cls}" style="background:${cellColor(li, t)}">${esc(show(tok))}</td>`;
+    }
+    h += `</tr>`;
+  });
+  g.innerHTML = h + `</tbody>`;
+  renderLegend();
+}
+
+let colmapKey = null;   // (data, column) the column map was built for
+
+function selectCell(li, t, { scroll = false } = {}) {
+  sel = [li, t];
+  document.querySelectorAll("#grid td.sel").forEach((x) => x.classList.remove("sel"));
+  const td = document.querySelector(`#grid td[data-li="${li}"][data-t="${t}"]`);
+  if (td) { td.classList.add("sel"); if (scroll) td.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+  renderDetail(); renderColmap();
+  window.dispatchEvent(new Event("lens:select"));
+}
+
+// All top-10 histograms for the selected column, stacked by layer. Rebuilt only
+// when the column (or the run / lens) changes; otherwise just move the highlight.
+function renderColmap() {
+  const el = $("colmap");
+  if (!sel || !data) { el.innerHTML = ""; colmapKey = null; return; }
+  const [li, t] = sel;
+  if (!colmapKey || colmapKey.data !== data || colmapKey.t !== t) {
+    const last = data.layers.length - 1, accent = css("--accent");
+    let h = `<h2>Column · position ${t} <span style="text-transform:none">(${esc(show(data.tokens[t]))})${t >= data.n_prompt ? " · generated" : ""}</span></h2>
+      <div class="ranks"><span></span>${[...Array(10)].map((_, k) => `<span>${k + 1}</span>`).join("")}</div><table>`;
+    data.layers.forEach((l, i) => {
+      const c = data.cells[i][t];
+      h += `<tr data-li="${i}" class="${i === last ? "out" : ""}"><th>${i === last ? "out" : "L" + l}</th>` +
+        c.ids.map((id, k) => {
+          const tok = data.vocab[id];
+          return `<td data-tid="${id}" data-note="${i === last ? "output" : "L" + l} · rank ${k + 1} · p = ${c.p[k]}" class="${foreign(tok) ? "xl" : ""}" style="background:hsl(${accent} / ${(Math.sqrt(c.p[k]) * 0.85).toFixed(3)})">${esc(show(tok.replace(/^ /, "")))}</td>`;  // leading-space marker dropped to save width; tooltip shows the exact token
+        }).join("") + `</tr>`;
+    });
+    el.innerHTML = h + `</table>`;
+    colmapKey = { data, t };
+  }
+  el.querySelectorAll("tr.cur").forEach((r) => r.classList.remove("cur"));
+  const row = el.querySelector(`tr[data-li="${li}"]`);
+  if (row) row.classList.add("cur");
+}
+
+function renderDetail() {
+  if (!sel || !data) return;
+  const [li, t] = sel, c = data.cells[li][t], l = data.layers[li];
+  const rows = c.ids.map((id, k) => `<div class="row"><div class="bar"><span style="width:${(c.p[k] * 100).toFixed(1)}%"></span><b data-tid="${id}" class="${foreign(data.vocab[id]) ? "xl" : ""}">${esc(show(data.vocab[id]))}</b>${gloss[id] && foreign(data.vocab[id]) ? `<span class="gl">${esc(gloss[id].en)}</span>` : ""}</div><span>${(c.p[k] * 100).toFixed(1)}%</span><button class="pin" data-id="${id}" title="pin">📌</button></div>`).join("");
+  $("detail").innerHTML = `<div><b>${l === data.layers[data.layers.length - 1] && li === data.layers.length - 1 ? "Model output" : "Layer " + l}</b> · position ${t} <span class="muted">(${esc(show(data.tokens[t]))})</span></div>
+    <div class="muted">entropy ${c.H.toFixed(2)} nats</div><h2>Top readout</h2>${rows}`;
+}
+
+function renderChips() {
+  $("chips").innerHTML = pins.map((p) => `<span class="chip ${heatToken === p.id ? "on" : ""}" data-id="${p.id}">${esc(show(p.text))}<i data-x="${p.id}">✕</i></span>`).join("");
+}
+function renderLegend() {
+  if (heatToken === null) { $("legend").innerHTML = ""; return; }
+  $("legend").innerHTML = `rank 1 <span class="ramp" style="background:linear-gradient(90deg,hsl(${css("--heat")} / .85),hsl(${css("--heat")} / 0))"></span> ≥10⁴`;
+}
+
+async function addPin(id, text) {
+  if (pins.some((p) => p.id === id)) return;
+  pins.push({ id, text }); renderChips();
+}
+
+$("grid").addEventListener("click", (e) => {
+  const td = e.target.closest("td"); if (!td) return;
+  selectCell(+td.dataset.li, +td.dataset.t);
+});
+$("colmap").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr[data-li]"); if (!tr || !sel) return;
+  selectCell(+tr.dataset.li, sel[1], { scroll: true });
+});
+// Hovering a word in the column map outlines every occurrence of it in that column.
+$("colmap").addEventListener("mouseover", (e) => {
+  const td = e.target.closest("td[data-tid]"); if (!td) return;
+  $("colmap").querySelectorAll("td.same").forEach((x) => x.classList.remove("same"));
+  $("colmap").querySelectorAll(`td[data-tid="${td.dataset.tid}"]`).forEach((x) => x.classList.add("same"));
+});
+$("colmap").addEventListener("mouseleave", () => $("colmap").querySelectorAll("td.same").forEach((x) => x.classList.remove("same")));
+// Arrow keys move the selection (up/down = layer, left/right = position) when not typing.
+document.addEventListener("keydown", (e) => {
+  if (!sel || !data || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+  const d = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
+  if (!d) return;
+  e.preventDefault();
+  const li = Math.min(Math.max(sel[0] + d[0], 0), data.layers.length - 1);
+  const t = Math.min(Math.max(sel[1] + d[1], 0), data.tokens.length - 1);
+  selectCell(li, t, { scroll: true });
+});
+$("detail").addEventListener("click", (e) => {
+  const b = e.target.closest(".pin"); if (!b) return;
+  const id = +b.dataset.id; addPin(id, data.vocab[id]);
+});
+$("chips").addEventListener("click", async (e) => {
+  const x = e.target.dataset.x;
+  if (x !== undefined) { pins = pins.filter((p) => p.id !== +x); if (heatToken === +x) heatToken = null; renderChips(); render(); return; }
+  const chip = e.target.closest(".chip"); if (!chip) return;
+  const id = +chip.dataset.id;
+  heatToken = heatToken === id ? null : id;
+  if (heatToken !== null) { $("status").textContent = "Computing ranks…"; await loadRanks(); $("status").textContent = ""; }
+  renderChips(); render();
+});
+$("pinBtn").addEventListener("click", async () => {
+  const text = $("pinText").value; if (!text.trim()) return;
+  const r = await api("/api/tokenize", { text });
+  for (const c of r.candidates) if (c.n_pieces === 1) await addPin(c.id, c.text);
+  if (!r.candidates.some((c) => c.n_pieces === 1) && r.candidates[0]) await addPin(r.candidates[0].id, r.candidates[0].text);
+  $("pinText").value = "";
+});
+$("pinText").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pinBtn").click(); });
+$("run").addEventListener("click", () => run());
+$("gen").addEventListener("click", () => run(Math.max(1, Math.min(200, +$("ntok").value || 20))));
+$("ntok").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gen").click(); });
+$("cont").addEventListener("click", (e) => {
+  if (e.target.id !== "append" || !data) return;
+  $("prompt").value = data.tokens.join("");
+  run();
+});
+// Re-reading with the other lens keeps the same token sequence (prompt + any continuation).
+$("lens").addEventListener("change", () => { if (data) run(0, { ids: data.ids, n_prompt: data.n_prompt }); });
+$("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) run(); });
+// ---- hover tooltip with translation for non-English tokens ----
+const tip = $("tip");
+let tipTarget = null, pending = null;
+function tipHtml(el) {
+  const id = +el.dataset.tid, tok = data.vocab[id] ?? el.textContent;
+  let h = `<span class="tok">${esc(show(tok))}</span>`;
+  if (foreign(tok)) {
+    const g = gloss[id];
+    h += g ? ` → <b>${esc(g.en)}</b> <span class="src">· ${esc(g.src)}</span>` : ` → <span class="src">translating…</span>`;
+  }
+  if (el.dataset.note) h += `<div class="src">${esc(el.dataset.note)}</div>`;
+  return h;
+}
+function placeTip(e) {
+  const pad = 14, r = tip.getBoundingClientRect();
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + r.width > innerWidth - 8) x = e.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = e.clientY - r.height - pad;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+document.addEventListener("mouseover", (e) => {
+  const el = e.target.closest("[data-tid]");
+  if (!el || !data) { tip.style.display = "none"; tipTarget = null; return; }
+  if (el === tipTarget) return;
+  tipTarget = el;
+  tip.innerHTML = tipHtml(el); tip.style.display = "block"; placeTip(e);
+  const id = +el.dataset.tid, tok = data.vocab[id] ?? "";
+  if (foreign(tok) && !gloss[id]) {
+    clearTimeout(pending);
+    pending = setTimeout(async () => {
+      const r = await api("/api/translate", { ids: [id] });
+      Object.assign(gloss, r);
+      if (tipTarget === el) tip.innerHTML = tipHtml(el);
+      if (sel) renderDetail();
+    }, 250);
+  }
+});
+document.addEventListener("mousemove", (e) => { if (tipTarget) placeTip(e); });
+document.addEventListener("mouseleave", () => { tip.style.display = "none"; tipTarget = null; });
+// ---- view switch + bridge for the J-Volume module ----
+window.lensUI = {
+  get data() { return data; }, get sel() { return sel; }, get gloss() { return gloss; },
+  selectCell, foreign, show, esc, css,
+};
+function setView(v) {
+  $("gridwrap").style.display = v === "grid" ? "" : "none";
+  $("volwrap").style.display = v === "volume" ? "block" : "none";
+  $("spacewrap").style.display = v === "space" ? "block" : "none";
+  $("vSpace").classList.toggle("on", v === "space");
+  $("vGrid").classList.toggle("on", v === "grid"); $("vVol").classList.toggle("on", v === "volume");
+  window.dispatchEvent(new CustomEvent("lens:view", { detail: v }));
+}
+$("vGrid").addEventListener("click", () => setView("grid"));
+$("vVol").addEventListener("click", () => setView("volume"));
+$("vSpace").addEventListener("click", () => setView("space"));
+info();
+</script>
+<script type="module" src="/static/volume.js"></script>
+<script type="module" src="/static/space.js"></script>
+</body>
+</html>
