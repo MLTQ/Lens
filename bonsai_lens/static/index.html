@@ -72,6 +72,19 @@ main { display: grid; grid-template-columns: 1fr 400px; flex: 1; min-height: 0; 
 #pbstrip .pbt.future { opacity: 0.12; }
 #pbstrip .pbt.nopred i { visibility: hidden; }
 #pbstrip .pbt.cur { outline: 1.5px solid var(--ink); background: color-mix(in srgb, var(--ink) 10%, transparent); }
+#kobox { border: 1px solid hsl(var(--heat) / .6); border-radius: 8px; padding: 8px 10px; margin: 10px 0; font-size: 12px; }
+#kobox h2 { margin-top: 0; color: hsl(var(--heat)); }
+#kobox .korow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 5px 0; color: var(--muted); }
+#kobox input[type=number] { width: 52px; padding: 2px 4px; }
+#kobox .tok { font-family: var(--mono); color: var(--ink); background: hsl(var(--heat) / .2); padding: 1px 5px; border-radius: 3px; white-space: pre; }
+#kobox .cont { font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; margin: 3px 0; }
+#kobox .cont b { color: var(--muted); font-weight: 400; display: inline-block; width: 64px; }
+#kobox .cont mark { background: hsl(var(--heat) / .35); color: var(--ink); border-radius: 2px; }
+#kobox table { width: 100%; border-collapse: collapse; font: 11px var(--mono); margin-top: 4px; }
+#kobox td, #kobox th { padding: 2px 4px; border-bottom: 1px solid var(--line); text-align: left; white-space: pre; width: auto; max-width: none; height: auto; cursor: default; position: static; background: none; }
+#kobox .up { color: #4caf7d; } #kobox .down { color: hsl(var(--heat)); }
+.pin.ko { font-size: 13px; }
+.kobanner { color: hsl(var(--heat)); font-weight: 600; }
 .pbctl { display: inline-flex; gap: 4px; align-items: center; }
 .splab.cur { background: #fff; color: #111; font-weight: 700; }
 .splab.main { border: 1px solid currentColor; font-weight: 600; }
@@ -96,7 +109,7 @@ td.sel { outline: 2px solid var(--sel); outline-offset: -2px; }
 tr.out th, tr.out td { border-top: 2px solid var(--muted); }
 aside { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 14px; }
 aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
-.row { display: grid; grid-template-columns: 1fr 52px 22px; gap: 6px; align-items: center; margin: 2px 0; font: 12px var(--mono); }
+.row { display: grid; grid-template-columns: 1fr 52px 18px 18px; gap: 6px; align-items: center; margin: 2px 0; font: 12px var(--mono); }
 .bar { height: 14px; border-radius: 3px; background: hsl(var(--accent) / .18); position: relative; overflow: hidden; }
 .bar span { position: absolute; inset: 0 auto 0 0; background: hsl(var(--accent) / .55); }
 .bar b { position: relative; padding-left: 4px; font-weight: 500; white-space: pre; }
@@ -194,6 +207,7 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
   </div>
   <aside>
     <div id="detail" class="muted">Run a prompt, then click a cell to see the lens readout at that layer and position.</div>
+    <div id="kobox" style="display:none"></div>
     <div id="colmap"></div>
     <h2>Pinned tokens</h2>
     <div style="display:flex; gap:6px; margin-bottom:8px">
@@ -236,6 +250,7 @@ async function run(generate = 0, reuse = {}) {
   $("status").textContent = generate ? `Generating ${generate} tokens, then running the lens…` : "Running…";
   try {
     data = await api("/api/run", { prompt: $("prompt").value, lens: $("lens").value, k: 10, generate, ...reuse });
+    koOrig = null; $("kobox").style.display = "none";
     renderContinuation();
     rankOf = null;
     Object.assign(gloss, data.gloss || {});
@@ -342,7 +357,7 @@ function renderColmap() {
 function renderDetail() {
   if (!sel || !data) return;
   const [li, t] = sel, c = data.cells[li][t], l = data.layers[li];
-  const rows = c.ids.map((id, k) => `<div class="row"><div class="bar"><span style="width:${(c.p[k] * 100).toFixed(1)}%"></span><b data-tid="${id}" class="${foreign(data.vocab[id]) ? "xl" : ""}">${esc(show(data.vocab[id]))}</b>${gloss[id] && foreign(data.vocab[id]) ? `<span class="gl">${esc(gloss[id].en)}</span>` : ""}</div><span>${(c.p[k] * 100).toFixed(1)}%</span><button class="pin" data-id="${id}" title="pin">📌</button></div>`).join("");
+  const rows = c.ids.map((id, k) => `<div class="row"><div class="bar"><span style="width:${(c.p[k] * 100).toFixed(1)}%"></span><b data-tid="${id}" class="${foreign(data.vocab[id]) ? "xl" : ""}">${esc(show(data.vocab[id]))}</b>${gloss[id] && foreign(data.vocab[id]) ? `<span class="gl">${esc(gloss[id].en)}</span>` : ""}</div><span>${(c.p[k] * 100).toFixed(1)}%</span><button class="pin" data-id="${id}" title="pin">📌</button><button class="pin ko" data-ko="${id}" title="knock out this concept">⊘</button></div>`).join("");
   $("detail").innerHTML = `<div><b>${l === data.layers[data.layers.length - 1] && li === data.layers.length - 1 ? "Model output" : "Layer " + l}</b> · position ${t} <span class="muted">(${esc(show(data.tokens[t]))})</span></div>
     <div class="muted">entropy ${c.H.toFixed(2)} nats</div><h2>Top readout</h2>${rows}`;
 }
@@ -386,6 +401,7 @@ document.addEventListener("keydown", (e) => {
   selectCell(li, t, { scroll: true });
 });
 $("detail").addEventListener("click", (e) => {
+  const kb = e.target.closest("[data-ko]"); if (kb) { openKnockout(+kb.dataset.ko); return; }
   const b = e.target.closest(".pin"); if (!b) return;
   const id = +b.dataset.id; addPin(id, data.vocab[id]);
 });
@@ -456,6 +472,77 @@ document.addEventListener("mouseover", (e) => {
 });
 document.addEventListener("mousemove", (e) => { if (tipTarget) placeTip(e); });
 document.addEventListener("mouseleave", () => { tip.style.display = "none"; tipTarget = null; });
+// ---- knockout: remove a concept's J-lens direction from the residual stream ----
+let koOrig = null;   // the unedited run while a knocked-out run is being viewed
+function openKnockout(id) {
+  if (!data || !sel) return;
+  const [, t] = sel, last = data.layers.length - 1;
+  // default layer range: where this token shows up in this column's top-10
+  const hits = data.layers.map((l, li) => (li < last && data.cells[li][t].ids.includes(id) ? l : null)).filter((x) => x !== null);
+  const lo = hits.length ? Math.min(...hits) : 20, hi = hits.length ? Math.min(62, Math.max(...hits)) : 62;
+  const nGen = Math.max(data.ids.length - data.n_prompt, 12);
+  $("kobox").innerHTML = `<h2>Knock out</h2>
+    <div class="korow">remove <span class="tok">${esc(show(data.vocab[id]))}</span> from the residual stream</div>
+    <div class="korow"><label><input type="radio" name="kopos" value="all" checked> all positions</label>
+      <label><input type="radio" name="kopos" value="${t}"> only pos ${t} <span class="tok">${esc(show(data.tokens[t]))}</span></label></div>
+    <div class="korow">layers <input type="number" id="koLo" min="0" max="62" value="${lo}">–<input type="number" id="koHi" min="0" max="62" value="${hi}">
+      continue <input type="number" id="koN" min="1" max="200" value="${nGen}"> tokens</div>
+    <div class="korow"><button class="primary" id="koRun">Run knockout</button><button id="koClose">close</button>
+      <span class="muted">default layers = where it appears in this column</span></div>
+    <div id="koRes"></div>`;
+  $("kobox").dataset.id = id;
+  $("kobox").style.display = "block";
+  $("kobox").scrollIntoView({ block: "nearest" });
+}
+function diffMark(base, other) {  // highlight only the span where ``other`` departs from ``base``
+  let i = 0; while (i < base.length && i < other.length && base[i] === other[i]) i++;
+  let j = 0; while (j < base.length - i && j < other.length - i && base[base.length - 1 - j] === other[other.length - 1 - j]) j++;
+  const mid = other.slice(i, other.length - j);
+  return esc(other.slice(0, i)) + (mid ? `<mark>${esc(mid)}</mark>` : "") + esc(other.slice(other.length - j));
+}
+async function runKnockout() {
+  const id = +$("kobox").dataset.id;
+  const pos = document.querySelector('input[name="kopos"]:checked').value;
+  const body = { token_id: id, positions: pos === "all" ? null : [+pos], layers: [+$("koLo").value, +$("koHi").value], generate: +$("koN").value };
+  $("koRun").disabled = true; $("koRes").innerHTML = `<div class="muted">Running edited forward passes + continuations (and a random-direction control)…</div>`;
+  const r = await api("/api/knockout", body);
+  $("koRun").disabled = false;
+  if (r.error || r.detail) { $("koRes").textContent = "Error: " + (r.error || JSON.stringify(r.detail)); return; }
+  const V = (i) => show(r.vocab[i] ?? data.vocab[i] ?? "?");
+  const moved = r.rows.filter((x) => x.ko[0][0] !== x.base[0][0] || Math.abs(x.p_orig_ko - x.base[0][1]) > 0.05);
+  const rowHtml = (x) => {
+    const b = x.base[0], d = x.p_orig_ko - b[1];
+    return `<tr><td>${x.t}</td><td>${esc(show(data.tokens[x.t]))}</td><td>${esc(V(b[0]))} ${b[1].toFixed(2)}</td>` +
+      `<td class="${d < 0 ? "down" : "up"}">${x.ko[0][0] === b[0] ? "" : esc(V(x.ko[0][0])) + " "}${x.p_orig_ko.toFixed(2)}</td><td>${x.p_orig_ctrl?.toFixed(2) ?? ""}</td></tr>`;
+  };
+  $("koRes").innerHTML = `
+    <div class="korow">removed ${(r.removed_share * 100).toFixed(2)}% of ‖h‖² at edited cells · random control ${(r.removed_share_ctrl * 100).toFixed(3)}% · ${(r.ms / 1000).toFixed(1)} s</div>
+    <div class="cont"><b>original</b>${esc(r.continuation.base)}</div>
+    <div class="cont"><b>knocked out</b>${diffMark(r.continuation.base, r.continuation.ko)}</div>
+    <div class="cont"><b>control</b>${diffMark(r.continuation.base, r.continuation.ctrl)}</div>
+    ${moved.length ? `<table><tr><th>pos</th><th>reads</th><th>predicted</th><th>after KO</th><th>ctrl</th></tr>${moved.map(rowHtml).join("")}</table>`
+      : `<div class="muted">No next-token prediction moved by more than 0.05.</div>`}
+    <div class="korow"><button id="koView">view knocked-out run</button><span class="muted">lens readouts of the edited pass over the same tokens</span></div>`;
+  $("koView").onclick = () => {
+    if (!koOrig) koOrig = data;
+    data = { ...r.run, knockout: { token: r.token, layers: r.layers, positions: r.positions } };
+    rankOf = null; render(); if (sel) { renderDetail(); renderColmap(); }
+    window.dispatchEvent(new Event("lens:data"));
+    $("status").innerHTML = `<span class="kobanner">KNOCKOUT VIEW</span> · ${esc(show(r.token))} removed at layers ${r.layers[0]}–${r.layers[1]}, ${r.positions ? "pos " + r.positions.join(",") : "all positions"} · <button id="koRestore">restore original</button>`;
+    $("koRestore").onclick = restoreOriginal;
+  };
+}
+function restoreOriginal() {
+  if (!koOrig) return;
+  data = koOrig; koOrig = null; rankOf = null; render(); if (sel) { renderDetail(); renderColmap(); }
+  window.dispatchEvent(new Event("lens:data"));
+  $("status").textContent = `${data.ids.length} tokens × ${data.layers.length} layers · original run restored`;
+}
+$("kobox").addEventListener("click", (e) => {
+  if (e.target.id === "koRun") runKnockout();
+  if (e.target.id === "koClose") $("kobox").style.display = "none";
+});
+
 // ---- view switch + bridge for the J-Volume module ----
 window.lensUI = {
   get data() { return data; }, get sel() { return sel; }, get gloss() { return gloss; },

@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bonsai_lens.mlx_backend import BonsaiMLX
+from bonsai_lens.mlx_backend import BonsaiMLX, intervene
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI()
@@ -112,39 +112,45 @@ def run(req: RunReq):
             gen_ms = round((time.time() - t1) * 1000)
             ids = ids + gen
         hs = m.residuals(ids)
-        layers = _layers(m, req.lens)
-        cells = []
-        for l in layers:
-            logits = m.readout(hs[l], l, req.lens)
-            probs = mx.softmax(logits, axis=-1)
-            top = mx.argpartition(-logits, req.k, axis=-1)[:, : req.k]
-            p = mx.take_along_axis(probs, top, axis=-1)
-            order = mx.argsort(-p, axis=-1)
-            top, p = mx.take_along_axis(top, order, -1), mx.take_along_axis(p, order, -1)
-            ent = -(probs * mx.log(probs + 1e-12)).sum(-1)
-            mx.eval(top, p, ent)
-            top, p, ent = top.tolist(), p.tolist(), ent.tolist()
-            cells.append([
-                {"ids": top[t], "p": [round(x, 4) for x in p[t]], "H": round(ent[t], 3)}
-                for t in range(len(ids))
-            ])
-        vocab = {i for row in cells for c in row for i in c["ids"]} | set(ids)
-        vocab_text = {i: m.decode_token(i) for i in vocab}
-        S["last"] = {"ids": ids, "hs": hs}
-        return {
-            "ids": ids,
-            "n_prompt": n_prompt,
-            "continuation": m.tok.decode(gen) if gen else m.tok.decode(ids[n_prompt:]),
+        S["last"] = {"ids": ids, "hs": hs, "n_prompt": n_prompt, "lens": req.lens}
+        out = _payload(m, ids, hs, n_prompt, req.lens, req.k)
+        out.update({
             "stopped_early": bool(req.generate) and len(gen) < min(req.generate, MAX_TOKENS - n_prompt),
-            "gen_ms": gen_ms,
-            "tokens": [m.decode_token(i) for i in ids],
-            "layers": layers,
-            "cells": cells,
-            "vocab": vocab_text,
-            "gloss": {i: _cached_gloss(i) for i, t in vocab_text.items()
-                      if _needs_gloss(t) and _cached_gloss(i)},
-            "ms": round((time.time() - t0) * 1000),
-        }
+            "gen_ms": gen_ms, "ms": round((time.time() - t0) * 1000),
+        })
+        return out
+
+
+def _payload(m: BonsaiMLX, ids, hs, n_prompt, lens="jacobian", k=10):
+    """Top-k lens readout for every (layer, position) of residuals ``hs``, as the page expects."""
+    layers = _layers(m, lens)
+    cells = []
+    for l in layers:
+        logits = m.readout(hs[l], l, lens)
+        probs = mx.softmax(logits, axis=-1)
+        top = mx.argpartition(-logits, k, axis=-1)[:, :k]
+        p = mx.take_along_axis(probs, top, axis=-1)
+        order = mx.argsort(-p, axis=-1)
+        top, p = mx.take_along_axis(top, order, -1), mx.take_along_axis(p, order, -1)
+        ent = -(probs * mx.log(probs + 1e-12)).sum(-1)
+        mx.eval(top, p, ent)
+        top, p, ent = top.tolist(), p.tolist(), ent.tolist()
+        cells.append([
+            {"ids": top[t], "p": [round(x, 4) for x in p[t]], "H": round(ent[t], 3)}
+            for t in range(len(ids))
+        ])
+    vocab = {i for row in cells for c in row for i in c["ids"]} | set(ids)
+    vocab_text = {i: m.decode_token(i) for i in vocab}
+    return {
+        "ids": ids,
+        "n_prompt": n_prompt,
+        "continuation": m.tok.decode(ids[n_prompt:]),
+        "tokens": [m.decode_token(i) for i in ids],
+        "layers": layers,
+        "cells": cells,
+        "vocab": vocab_text,
+        "gloss": {i: _cached_gloss(i) for i, t in vocab_text.items() if _needs_gloss(t) and _cached_gloss(i)},
+    }
 
 
 @app.post("/api/ranks")
@@ -198,6 +204,161 @@ def translate(req: TransReq):
             g = _cached_gloss(i)
         out[i] = g
     return out
+
+
+@app.get("/api/jspace")
+def jspace(layers: str = "8,16,24,32,40,48,56,62", k: int = 25, seed: int = 0):
+    """How much of each activation (last run) lies in J-space: share of ||h||^2 captured by
+    a non-negative combination of its top-k J-lens vectors, vs k random tokens' vectors,
+    vs the 5 largest coordinates. Approximates the paper's gradient-pursuit decomposition."""
+    import numpy as np
+
+    m: BonsaiMLX = S["model"]
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    rng = np.random.default_rng(seed)
+    with _lock:
+        hs, T = last["hs"], len(last["ids"])
+        # self-check: reconstructed directions reproduce the model's own logits at the output
+        h = hs[m.n_layers - 1][-1:].astype(mx.float32)
+        ids = [int(i) for i in mx.argsort(-m.readout(h, m.n_layers - 1, "logit")[0])[:5].tolist()]
+        lin = (h / mx.sqrt((h * h).mean(-1, keepdims=True) + 1e-6)) @ m.lens_dirs(m.n_layers - 1, ids).T
+        ref = m.readout(h, m.n_layers - 1, "logit")[0, mx.array(ids)]
+        check = float(mx.abs(lin[0] - ref).max() / mx.abs(ref).max())
+        rows = []
+        for l in [int(x) for x in layers.split(",")]:
+            hl = hs[l]
+            logits = m.readout(hl, l, "jacobian" if l < m.n_layers - 1 else "logit")
+            top = mx.argsort(-logits, axis=-1)[:, :k].tolist()
+            rand = [rng.integers(0, 248077, k).tolist() for _ in range(T)]
+            fj = m.jspace_fraction(hl, l, top)
+            fr = m.jspace_fraction(hl, l, rand)
+            H = np.array(hl.astype(mx.float32))
+            sq = H**2
+            top5 = np.sort(sq, axis=-1)[:, -5:].sum(-1) / sq.sum(-1)
+            skip = slice(min(1, T - 1), None)  # position 0 is an attention sink; report it apart
+            rows.append({"layer": l, "jspace": float(np.median(fj[skip])), "jspace_max": float(np.max(fj[skip])),
+                         "random": float(np.median(fr[skip])), "top5_dims": float(np.median(top5[skip])),
+                         "pos0_jspace": fj[0], "pos0_top5_dims": float(top5[0]), "cells": fj})
+        return {"k": k, "T": T, "self_check_rel_err": check, "layers": rows}
+
+
+class KnockReq(BaseModel):
+    token_id: int
+    positions: list[int] | None = None   # None = every position (incl. generated ones)
+    layers: list[int] = [20, 62]         # inclusive range of residual layers to ablate
+    generate: int | None = None          # continuation length; default = last run's
+    control: bool = True                 # also ablate a random direction as a control
+
+
+@app.post("/api/knockout")
+def knockout(req: KnockReq):
+    """Knock a concept out of the residual stream and measure what changes.
+
+    At every layer in ``layers`` and every position in ``positions`` the positive
+    component along the token's J-lens vector a_u = J_l^T (gamma * w_u) is projected out
+    of the residual stream, and the forward pass continues from the edited state (later
+    layers see the edit). We compare, against the unedited run: the model's next-token
+    distribution at every position (same token sequence), and a fresh greedy
+    continuation of the prompt. A random unit direction, ablated identically, is the
+    control for generic disruption.
+    """
+    import numpy as np
+
+    m: BonsaiMLX = S["model"]
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    ids, n_prompt, out_l = last["ids"], last["n_prompt"], m.n_layers - 1
+    lo, hi = max(0, req.layers[0]), min(m.n_layers - 2, req.layers[-1])
+    n_gen = req.generate if req.generate is not None else max(len(ids) - n_prompt, 12)
+    t0 = time.time()
+    with _lock:
+        dirs = {l: m.lens_dirs(l, [req.token_id])[0] for l in range(lo, hi + 1)}
+        rng = np.random.default_rng(0)
+        ctrl = {l: mx.array(rng.standard_normal(m.lm.model.norm.weight.shape[0]).astype(np.float32)) for l in dirs}
+
+        def next_token_probs(hs):
+            return mx.softmax(m.readout(hs[out_l], out_l, "logit"), axis=-1)
+
+        def removed_share(hs_before, d):  # how much of ||h||^2 the edit took out, at ablated cells
+            vals = []
+            for l, v in d.items():
+                u = v / mx.linalg.norm(v)
+                h = hs_before[l].astype(mx.float32)
+                c = mx.maximum((h * u).sum(-1), 0)
+                share = (c * c) / (h * h).sum(-1)
+                sel = share if req.positions is None else share[mx.array([p for p in req.positions if p < len(ids)])]
+                vals.append(float(sel.mean()))
+            return float(np.mean(vals))
+
+        base_p = next_token_probs(last["hs"])
+        with intervene(dirs, req.positions):
+            hs_ko = m.residuals(ids)
+            gen_ko = m.generate(ids[:n_prompt], n_gen)
+        ko_p = next_token_probs(hs_ko)
+        if req.control:
+            with intervene(ctrl, req.positions):
+                hs_c = m.residuals(ids)
+                gen_c = m.generate(ids[:n_prompt], n_gen)
+            c_p = next_token_probs(hs_c)
+        base_gen = ids[n_prompt:] if len(ids) - n_prompt >= n_gen else m.generate(ids[:n_prompt], n_gen)
+
+        def top(pr, t, k=5):
+            row = pr[t]
+            ix = mx.argsort(-row)[:k].tolist()
+            return [[int(i), round(float(row[i]), 4)] for i in ix]
+
+        rows = []
+        for t in range(len(ids)):
+            b = top(base_p, t)
+            orig = b[0][0]
+            r = {"t": t, "base": b, "ko": top(ko_p, t), "p_orig_ko": round(float(ko_p[t, orig]), 4),
+                 "ablated": req.positions is None or t in req.positions}
+            if req.control:
+                r["ctrl"] = top(c_p, t)
+                r["p_orig_ctrl"] = round(float(c_p[t, orig]), 4)
+            rows.append(r)
+        vocab = {i for r in rows for key in ("base", "ko", "ctrl") for i, _ in r.get(key, [])}
+        vocab |= set(base_gen) | set(gen_ko) | (set(gen_c) if req.control else set())
+        run = _payload(m, ids, hs_ko, n_prompt, last.get("lens", "jacobian"))
+        return {
+            "token_id": req.token_id, "token": m.decode_token(req.token_id),
+            "layers": [lo, hi], "positions": req.positions,
+            "removed_share": removed_share(last["hs"], dirs),
+            "removed_share_ctrl": removed_share(last["hs"], ctrl) if req.control else None,
+            "rows": rows,
+            "continuation": {"base": m.tok.decode(base_gen), "ko": m.tok.decode(gen_ko),
+                             "ctrl": m.tok.decode(gen_c) if req.control else None},
+            "vocab": {i: m.decode_token(i) for i in vocab},
+            "run": run,
+            "ms": round((time.time() - t0) * 1000),
+        }
+
+
+@app.get("/api/massive")
+def massive(top: int = 6):
+    """Residual-stream coordinates that carry the most squared norm in the last run, per layer
+    (the 'massive activation' dims), with their share of ||h||^2 and sign, position 0 apart."""
+    import numpy as np
+
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    H = np.array(last["hs"].astype(mx.float32))  # [L, T, d]
+    out = []
+    for l in range(H.shape[0]):
+        rest = H[l, 1:] if H.shape[1] > 1 else H[l]
+        e = (rest**2).sum(0)
+        share = e / e.sum()
+        ix = np.argsort(-share)[:top]
+        e0 = H[l, 0] ** 2
+        out.append({"layer": l, "dims": [{"dim": int(i), "share": round(float(share[i]), 4),
+                                          "mean": round(float(rest[:, i].mean()), 1)} for i in ix],
+                    "pos0_top": [int(i) for i in np.argsort(-e0)[:top]],
+                    "pos0_share": round(float(np.sort(e0)[-top:].sum() / e0.sum()), 3)})
+    return {"layers": out}
 
 
 _SPACE: dict = {}

@@ -19,6 +19,11 @@ import mlx.core as mx
 import numpy as np
 
 _RECORD: list | None = None
+# Active intervention: {"dirs": {layer: unit vector [d] fp32}, "positions": set[int] | None (= all)}.
+# ``_OFFSET`` is the absolute position of the first token of the current forward call
+# (0 for a full pass; the cache length during incremental generation).
+_INTERVENE: dict | None = None
+_OFFSET = 0
 
 
 def _install_recorder():
@@ -31,12 +36,26 @@ def _install_recorder():
 
     def __call__(self, x, *args, **kwargs):
         out = orig(self, x, *args, **kwargs)
+        if _INTERVENE is not None and self._lens_idx in _INTERVENE["dirs"]:
+            out = _ablate(out, _INTERVENE["dirs"][self._lens_idx], _INTERVENE["positions"])
         if _RECORD is not None:
             _RECORD.append(out)
         return out
 
     cls.__call__ = __call__
     cls._lens_patched = True
+
+
+def _ablate(h: mx.array, d: mx.array, positions) -> mx.array:
+    """Remove the positive component of ``h`` along unit direction ``d`` (a knockout:
+    the concept is taken out where present; an anti-aligned residual is left alone)."""
+    L = h.shape[1]
+    coef = mx.maximum((h.astype(mx.float32) * d).sum(-1, keepdims=True), 0.0)  # [B, L, 1]
+    if positions is not None:
+        pos = mx.arange(_OFFSET, _OFFSET + L)
+        mask = mx.array([int(p) in positions for p in pos.tolist()])[None, :, None]
+        coef = coef * mask
+    return (h.astype(mx.float32) - coef * d).astype(h.dtype)
 
 
 class BonsaiMLX:
@@ -49,6 +68,10 @@ class BonsaiMLX:
         _install_recorder()
         model, _, _ = load_vl_model(pack, load_processor=False)
         self.lm = model.language_model
+        for i, layer in enumerate(self.lm.model.layers):
+            layer._lens_idx = i
+        from runtime import fwht as prism_fwht
+        self._fwht = prism_fwht
         self.tok = Tokenizer.from_file(str(pack / "tokenizer.json"))
         self.n_layers = len(self.lm.model.layers)
         self.d_model = self.lm.model.embed_tokens.weight.shape[0] and 5120
@@ -75,10 +98,51 @@ class BonsaiMLX:
     def decode_token(self, i: int) -> str:
         return self.tok.decode([int(i)], skip_special_tokens=False)
 
+    # ------------------------------------------------------------ directions
+    def readout_rows(self, ids: list[int]) -> mx.array:
+        """Effective unembedding rows [n, d] (fp32) in the native residual basis:
+        logit_u = w_u . x for the (post-norm) input x of the head."""
+        head, idx = self.lm.lm_head, mx.array(ids)
+        w = mx.dequantize(head.weight[idx], head.scales[idx], head.biases[idx],
+                          group_size=128, bits=2).astype(mx.float32)
+        return self._fwht(w, head.block, head.signs, inverse=True) if head.block else w
+
+    def lens_dirs(self, layer: int, ids: list[int]) -> mx.array:
+        """J-lens vectors for ``ids`` at ``layer`` ([n, d] fp32): a_u = J_l^T (gamma * w_u),
+        the direction in layer-l residual space whose lens logit for token u it is."""
+        g = self.readout_rows(ids) * self.lm.model.norm.weight.astype(mx.float32)
+        if layer < self.n_layers - 1:
+            g = g @ self.J[layer].astype(mx.float32)
+        return g
+
+    def jspace_fraction(self, h: mx.array, layer: int, support: list[list[int]], iters: int = 4):
+        """Share of ||h_t||^2 captured by a non-negative combination of the J-lens vectors
+        in ``support[t]`` (least squares, negatives clamped and refit). h: [T, d]."""
+        import numpy as np
+
+        H = np.array(h.astype(mx.float32), dtype=np.float64)
+        out = []
+        for t, ids in enumerate(support):
+            A = np.array(self.lens_dirs(layer, ids), dtype=np.float64)  # [k, d]
+            keep = np.arange(len(ids))
+            fit = lambda k: np.linalg.solve(A[k] @ A[k].T + 1e-6 * np.eye(len(k)), A[k] @ H[t])
+            c = fit(keep)
+            for _ in range(iters):  # drop negative coefficients and refit
+                if (c >= 0).all() or not (c > 0).any():
+                    break
+                keep = keep[c > 0]
+                c = fit(keep)
+            c = np.maximum(c, 0)  # any residual negatives after the last refit are clamped
+            rec = A[keep].T @ c
+            out.append(float(rec @ rec / (H[t] @ H[t])))
+        return out
+
+    # -------------------------------------------------------------- forward
     def residuals(self, ids: list[int]) -> mx.array:
         """[n_layers, T, d] residual stream after each block (fp16)."""
-        global _RECORD
+        global _RECORD, _OFFSET
         _RECORD = []
+        _OFFSET = 0
         try:
             x = mx.array([ids], dtype=mx.int32)
             self.lm.model(x, cache=self.lm.make_cache())  # mlx-vlm attention needs a cache
@@ -101,10 +165,12 @@ class BonsaiMLX:
         """Greedy (argmax) continuation of ``ids`` for up to ``n`` tokens, raw
         completion: no chat template, no sampling. Stops early on end-of-text
         or when ``stop(token_id)`` is true (the stopping token is not kept)."""
+        global _OFFSET
         cache = self.lm.make_cache()
         x = mx.array([ids], dtype=mx.int32)
         out: list[int] = []
-        for _ in range(n):
+        for step in range(n):
+            _OFFSET = 0 if step == 0 else len(ids) + step - 1
             nxt = int(mx.argmax(self.lm(x, cache=cache).logits[0, -1]).item())
             if nxt in self.STOP_IDS or (stop and stop(nxt)):
                 break
@@ -127,3 +193,20 @@ class BonsaiMLX:
             h = h.astype(mx.float16) @ J.T
         logits = self.lm.lm_head(self.lm.model.norm(h.astype(mx.float16)))
         return logits.astype(mx.float32)
+
+
+class intervene:
+    """Context manager: knock out ``dirs`` ({layer: vector}) at ``positions`` (None = all)."""
+
+    def __init__(self, dirs: dict, positions=None):
+        self.cfg = {"dirs": {l: v / mx.linalg.norm(v) for l, v in dirs.items()},
+                    "positions": None if positions is None else set(positions)}
+
+    def __enter__(self):
+        global _INTERVENE
+        _INTERVENE = self.cfg
+        return self
+
+    def __exit__(self, *exc):
+        global _INTERVENE
+        _INTERVENE = None
