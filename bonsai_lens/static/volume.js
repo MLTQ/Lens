@@ -15,7 +15,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(devicePixelRatio);
 host.prepend(renderer.domElement);
 const labels = new CSS2DRenderer();
-Object.assign(labels.domElement.style, { position: "absolute", inset: "0", pointerEvents: "none" });
+// z-index + isolation: CSS2DRenderer gives every label its own z-index; keep them all in one
+// layer below the overlay panels (atom card, legends, controls).
+Object.assign(labels.domElement.style, { position: "absolute", inset: "0", pointerEvents: "none", zIndex: "1", isolation: "isolate" });
 host.prepend(labels.domElement);
 
 const scene = new THREE.Scene();

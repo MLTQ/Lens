@@ -15,6 +15,8 @@ Endpoints
 from __future__ import annotations
 
 import argparse
+import asyncio
+import functools
 import gzip
 import json
 import threading
@@ -33,7 +35,31 @@ from bonsai_lens.mlx_backend import BonsaiMLX, intervene
 STATIC = Path(__file__).parent / "static"
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.middleware("http")
+async def no_cache_for_code(request, call_next):
+    """The page and its scripts change while you work: never let the browser reuse stale copies."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 _lock = threading.Lock()
+
+# MLX binds GPU streams (and any lazily computed, cached arrays) to the thread that created them;
+# FastAPI would otherwise run each request on an arbitrary pool thread, which fails with
+# "There is no Stream(gpu, N) in current thread". All model work runs on this one thread.
+from concurrent.futures import ThreadPoolExecutor
+
+_MLX = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+
+
+def on_mlx(fn):
+    """Run a (sync) endpoint on the dedicated MLX thread; FastAPI still sees fn's signature."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.get_running_loop().run_in_executor(_MLX, functools.partial(fn, *args, **kwargs))
+    return wrapper
 S: dict = {"model": None, "last": None}
 
 # Token-id -> English gloss for the Qwen3.5 vocabulary, from anthropics/jacobian-lens
@@ -83,10 +109,17 @@ def _layers(m: BonsaiMLX, lens: str) -> list[int]:
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    """The page, with module script URLs stamped by file mtime so edits are never served stale."""
+    from fastapi.responses import HTMLResponse
+
+    html = (STATIC / "index.html").read_text()
+    for name in ("volume.js", "space.js"):
+        html = html.replace(f'src="/static/{name}"', f'src="/static/{name}?v={int((STATIC / name).stat().st_mtime)}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/info")
+@on_mlx
 def info():
     m: BonsaiMLX = S["model"]
     return {"n_layers": m.n_layers, "d_model": 5120, "lens": m.lens_info,
@@ -94,6 +127,7 @@ def info():
 
 
 @app.post("/api/run")
+@on_mlx
 def run(req: RunReq):
     m: BonsaiMLX = S["model"]
     with _lock:
@@ -154,6 +188,7 @@ def _payload(m: BonsaiMLX, ids, hs, n_prompt, lens="jacobian", k=10):
 
 
 @app.post("/api/ranks")
+@on_mlx
 def ranks(req: RankReq):
     m: BonsaiMLX = S["model"]
     last = S["last"]
@@ -177,11 +212,12 @@ def ranks(req: RankReq):
 
 
 @app.post("/api/reload_lens")
+@on_mlx
 def reload_lens():
     with _lock:
         S["model"].load_lens(S["lens_path"])
         S["last"] = None
-    return info()
+    return info.__wrapped__()  # already on the MLX thread: call the plain function, not the async wrapper
 
 
 def _cached_gloss(i: int) -> dict | None:
@@ -193,6 +229,7 @@ def _cached_gloss(i: int) -> dict | None:
 
 
 @app.post("/api/translate")
+@on_mlx
 def translate(req: TransReq):
     m: BonsaiMLX = S["model"]
     out = {}
@@ -207,6 +244,7 @@ def translate(req: TransReq):
 
 
 @app.get("/api/jspace")
+@on_mlx
 def jspace(layers: str = "8,16,24,32,40,48,56,62", k: int = 25, seed: int = 0):
     """How much of each activation (last run) lies in J-space: share of ||h||^2 captured by
     a non-negative combination of its top-k J-lens vectors, vs k random tokens' vectors,
@@ -253,6 +291,7 @@ class KnockReq(BaseModel):
 
 
 @app.post("/api/knockout")
+@on_mlx
 def knockout(req: KnockReq):
     """Knock a concept out of the residual stream and measure what changes.
 
@@ -338,6 +377,7 @@ def knockout(req: KnockReq):
 
 
 @app.get("/api/massive")
+@on_mlx
 def massive(top: int = 6):
     """Residual-stream coordinates that carry the most squared norm in the last run, per layer
     (the 'massive activation' dims), with their share of ||h||^2 and sign, position 0 apart."""
@@ -361,6 +401,24 @@ def massive(top: int = 6):
     return {"layers": out}
 
 
+@app.get("/api/nonverbal")
+@on_mlx
+def nonverbal(lo: int = 16, hi: int = 62, top: int = 4):
+    """Per cell of the last run (layers lo..hi): verbal / privileged / non-verbal shares and the
+    strongest non-verbal atoms. The atom dictionary was trained on layers 16-62."""
+    m: BonsaiMLX = S["model"]
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    if getattr(m, "sae", None) is None:
+        return {"error": "no atom dictionary loaded (lenses/atoms/sae.pt)"}
+    with _lock:
+        t0 = time.time()
+        layers = list(range(max(lo, 0), min(hi, m.n_layers - 2) + 1))
+        cells = {l: m.nonverbal(last["hs"][l], l, top_atoms=top) for l in layers}
+        return {"layers": layers, "cells": cells, "ms": round((time.time() - t0) * 1000)}
+
+
 _SPACE: dict = {}
 
 
@@ -375,6 +433,9 @@ def space_nn(id: int, k: int = 30):
         Z /= np.linalg.norm(Z, axis=1, keepdims=True) + 1e-8
         _SPACE["Z"] = Z
     Z = _SPACE["Z"]
+    if not 0 <= id < len(Z):
+        from fastapi import HTTPException
+        raise HTTPException(400, f"id {id} is not a vocabulary token (atoms have their own cards)")
     sims = Z @ Z[id]
     top = np.argpartition(-sims, k + 1)[: k + 1]
     top = top[np.argsort(-sims[top])]
@@ -382,6 +443,7 @@ def space_nn(id: int, k: int = 30):
 
 
 @app.post("/api/tokenize")
+@on_mlx
 def tokenize(req: TokReq):
     m: BonsaiMLX = S["model"]
     cands = []
@@ -401,13 +463,18 @@ def main():
     ap.add_argument("--space", default="lenses/space", help="output dir of scripts/embed_vocab.py")
     args = ap.parse_args()
     t0 = time.time()
-    S["model"] = BonsaiMLX(args.pack)
+    S["model"] = _MLX.submit(BonsaiMLX, args.pack).result()  # created on the MLX thread
     S["lens_path"] = args.lens
     S["space_dir"] = args.space
     # Token-space files (meta.json, coords*.f32); the page reports if they are missing.
     app.mount("/space", StaticFiles(directory=args.space, check_dir=False), name="space")
+    # Joint token + non-verbal-atom layouts (scripts/embed_joint.py); optional.
+    app.mount("/joint", StaticFiles(directory=str(Path(args.space).parent / "joint"), check_dir=False), name="joint")
     if Path(args.lens).exists():
-        S["model"].load_lens(args.lens)
+        _MLX.submit(S["model"].load_lens, args.lens).result()
+    atoms = Path(args.space).parent / "atoms" / "sae.pt"
+    if atoms.exists():
+        _MLX.submit(S["model"].load_atoms, atoms).result()
     print(f"ready in {time.time() - t0:.0f}s; lens={S['model'].lens_info}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 

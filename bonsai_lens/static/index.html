@@ -85,9 +85,37 @@ main { display: grid; grid-template-columns: 1fr 400px; flex: 1; min-height: 0; 
 #kobox .up { color: #4caf7d; } #kobox .down { color: hsl(var(--heat)); }
 .pin.ko { font-size: 13px; }
 .kobanner { color: hsl(var(--heat)); font-weight: 600; }
+#cands summary { cursor: pointer; }
+#cands summary h2 { margin: 14px 0 6px; }
+.cand { padding: 5px 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; margin-bottom: 3px; font-size: 12px; }
+.cand:hover { border-color: var(--line); background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.cand .id { font: 600 12px var(--mono); color: #b6d800; }
+.cand .sc { float: right; font: 11px var(--mono); color: var(--muted); }
+.cand .d { font-style: italic; margin: 2px 0; }
+.cand .ctx { font: 11px/1.35 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+.cand .ctx mark { background: #d4ff0055; color: var(--ink); border-radius: 2px; }
 .pbctl { display: inline-flex; gap: 4px; align-items: center; }
 .splab.cur { background: #fff; color: #111; font-weight: 700; }
+.reglab { font: 600 11px -apple-system, system-ui, sans-serif; color: var(--ink); white-space: nowrap; pointer-events: none;
+  text-shadow: 0 0 3px var(--bg), 0 0 6px var(--bg); letter-spacing: .02em; }
+.infobtn .pop h4 { margin: 8px 0 2px; font-size: 11px; color: var(--ink); }
+.infobtn .pop h4:first-child { margin-top: 0; }
+.infobtn .pop table { border-collapse: collapse; margin: 2px 0; }
+.infobtn .pop td { padding: 0 8px 0 0; }
 .splab.main { border: 1px solid currentColor; font-weight: 600; }
+.infobtn { position: relative; cursor: help; color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; user-select: none; }
+.infobtn:hover, .infobtn:focus { color: var(--ink); outline: none; }
+.infobtn .pop { display: none; position: fixed; z-index: 20; width: 380px; max-height: 70vh; overflow: auto; font-size: 11px; line-height: 1.45;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; color: var(--muted); box-shadow: 0 6px 20px rgb(0 0 0 / .3); cursor: default; }
+.infobtn:hover .pop, .infobtn:focus .pop { display: block; }
+.infobtn .pop b { color: var(--ink); font-weight: 600; }
+#atomcard { position: absolute; top: 96px; left: 10px; z-index: 3; display: none; width: min(420px, 60%); max-height: 60%; overflow: auto;
+  background: var(--panel); border: 1px solid #d4ff00; border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+#atomcard h3 { margin: 0 0 4px; font: 600 13px var(--mono); color: #b6d800; }
+#atomcard .ex { font: 11px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word; margin: 3px 0; color: var(--muted); }
+#atomcard .ex mark { background: #d4ff0055; color: var(--ink); border-radius: 2px; }
+#atomcard .spark { font: 14px var(--mono); letter-spacing: 1px; color: #b6d800; }
+#atomcard button { float: right; font-size: 11px; padding: 1px 6px; }
 #splegend .lg.off { opacity: .35; text-decoration: line-through; }
 .splab { font: 11px var(--mono); color: var(--ink); background: color-mix(in srgb, var(--panel) 80%, transparent);
   padding: 1px 4px; border-radius: 3px; white-space: pre; pointer-events: none; transform: translateY(-12px); }
@@ -159,6 +187,7 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
     <div class="gencontrols" title="Greedy next-token prediction: append the single most likely token, N times, then run the lens on everything">
       <input type="number" id="ntok" min="1" max="200" value="20" aria-label="tokens to generate">
       <button id="gen">Continue</button>
+      <button id="genEnd" title="Keep taking the most likely token until the model emits an end-of-text token (capped at 256 tokens in total)">Until end</button>
     </div>
   </div>
   <div class="seg" role="tablist" aria-label="View">
@@ -181,16 +210,27 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
     </div>
     <div id="spacewrap">
       <div class="vctl">
-        <select id="spdim"><option value="3">3D</option><option value="2">2D</option></select>
-        <label>color <select id="spcolor"><option value="cat">token type</option><option value="norm">readout norm</option></select></label>
+        <select id="spdim" title="A: words only · B: words + non-verbal atoms, one joint projection · C: B's floor, height = distance to the nearest word">
+          <option value="A3">A · words 3D</option><option value="A3L">A · words 3D, local-faithful</option><option value="A2">A · words 2D</option>
+          <option value="B" disabled>B · words + atoms (UMAP)</option><option value="D" disabled>B · words + atoms (densMAP)</option>
+          <option value="C" disabled>C · height = distance to nearest word</option></select>
+        <label>color <select id="spcolor"><option value="cat">token type</option><option value="norm">readout norm</option>
+          <option value="fid" title="How many of each point's true nearest neighbours are also near it in this picture">layout fidelity (this view)</option>
+          <option value="desc" title="How well Bonsai's own description of each atom predicts where it fires">atom describability</option>
+          <option value="iso" title="Distance from each point to its nearest other point, measured in the full space (independent of the layout)">isolation (full space)</option></select></label>
         <input type="text" id="spsearch" placeholder="find token… ↵" title="Enter: highlight matching tokens. Click any point: show its 30 nearest neighbours." style="width:130px; padding:2px 6px; font-size:12px">
-        <button id="spclear">clear</button><span id="spcount"></span>
+        <button id="spclear">clear</button>
+        <label title="Names for vocabulary regions; shown only where the region is compact in this view"><input type="checkbox" id="spRegions" checked> regions</label>
+        <span id="spinfo" class="infobtn" tabindex="0">ⓘ about this map<span class="pop" id="spstats"></span></span>
+        <span id="spcount"></span>
         <span style="flex-basis:100%; height:0"></span>
         <label title="Trace the current run through the space"><input type="checkbox" id="trOn" checked> trace run</label>
         <label title="Readouts per cell to branch to">top-k <input type="number" id="trK" min="1" max="10" value="3" style="width:44px"></label>
         <label title="Hide branches weaker than this">min p <input type="range" id="trP" min="0" max="100" value="30" style="width:90px"> <span id="trPv"></span></label>
         <label title="Only branch to readouts from these layers (63 = model output)">layers <input type="number" id="trLo" min="0" max="63" value="20" style="width:48px">–<input type="number" id="trHi" min="0" max="63" value="63" style="width:48px"></label>
         <label><input type="checkbox" id="trLab" checked> labels</label>
+        <label title="Non-verbal atoms: the parts of each activation the lens cannot read (views B / densMAP / C only)"><input type="checkbox" id="trAtoms"> atoms ≥
+          <input type="number" id="trAthr" min="0.1" max="50" step="0.1" value="1" style="width:46px">% of activation</label>
         <span class="pbctl">
           <button id="pbPlay" title="Replay token by token: layers pop in, rays converge on the output">▶ play</button>
           <button id="pbStep" title="Play just the next token">⏭</button>
@@ -202,6 +242,7 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
       <div id="trlegend"></div>
       <div id="pbstrip"></div>
       <div id="splegend"></div>
+      <div id="atomcard"></div>
       <div class="vhelp" id="spstatus"></div>
     </div>
   </div>
@@ -209,6 +250,15 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
     <div id="detail" class="muted">Run a prompt, then click a cell to see the lens readout at that layer and position.</div>
     <div id="kobox" style="display:none"></div>
     <div id="colmap"></div>
+    <details id="cands" style="display:none">
+      <summary><h2 style="display:inline">Atoms Bonsai can't describe <span id="candN"></span></h2></summary>
+      <div class="muted" style="margin:4px 0 6px">Non-verbal atoms whose own description predicts where they fire no better than chance,
+        re-tested on 15 fresh firing vs 15 silent contexts and no better than a random other atom's description.
+        Candidates for the xeno hunt — or for a better describer. Click one to open it.</div>
+      <div id="candlist"></div>
+      <details id="candMore" style="margin-top:6px"><summary class="muted">At or below chance in the first pass, not re-tested (<span id="candMoreN"></span>) — noisy</summary>
+        <div id="candmorelist"></div></details>
+    </details>
     <h2>Pinned tokens</h2>
     <div style="display:flex; gap:6px; margin-bottom:8px">
       <input type="text" id="pinText" placeholder="word to pin…" style="flex:1">
@@ -222,6 +272,7 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
 <div id="tip"></div>
 <script>
 const $ = (id) => document.getElementById(id);
+const UNTIL_END = 100000;  // "as many as fit": the server caps generation at MAX_TOKENS minus the prompt
 let data = null, sel = null, pins = [], rankOf = null, heatToken = null;
 const gloss = {};                       // token id -> {en, src}, merged across runs
 // Non-English = contains a non-ASCII *letter* (so curly quotes/dashes on English words don't count).
@@ -246,8 +297,9 @@ async function info() {
 }
 
 async function run(generate = 0, reuse = {}) {
-  $("run").disabled = $("gen").disabled = true;
-  $("status").textContent = generate ? `Generating ${generate} tokens, then running the lens…` : "Running…";
+  $("run").disabled = $("gen").disabled = $("genEnd").disabled = true;
+  $("status").textContent = generate === UNTIL_END ? "Generating until an end token (or the 256-token cap), then running the lens…"
+    : generate ? `Generating ${generate} tokens, then running the lens…` : "Running…";
   try {
     data = await api("/api/run", { prompt: $("prompt").value, lens: $("lens").value, k: 10, generate, ...reuse });
     koOrig = null; $("kobox").style.display = "none";
@@ -261,9 +313,10 @@ async function run(generate = 0, reuse = {}) {
     window.dispatchEvent(new Event("lens:data"));
     const nGen = data.ids.length - data.n_prompt;
     $("status").textContent = `${data.ids.length} tokens × ${data.layers.length} layers · ${$("lens").selectedOptions[0].text} · ${data.ms} ms` +
-      (nGen || generate ? ` · ${nGen} generated greedily in ${data.gen_ms} ms${data.stopped_early ? " (stopped at end-of-text)" : ""}` : "");
+      (nGen || generate ? ` · ${nGen} generated greedily in ${data.gen_ms} ms${data.stopped_early ? " (stopped at end-of-text)"
+        : generate === UNTIL_END ? " (hit the 256-token cap without an end token)" : ""}` : "");
   } catch (e) { $("status").textContent = "Error: " + e; }
-  $("run").disabled = $("gen").disabled = false;
+  $("run").disabled = $("gen").disabled = $("genEnd").disabled = false;
 }
 
 // The prompt as the model tokenized it, followed by the greedy continuation.
@@ -424,6 +477,7 @@ $("pinBtn").addEventListener("click", async () => {
 $("pinText").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pinBtn").click(); });
 $("run").addEventListener("click", () => run());
 $("gen").addEventListener("click", () => run(Math.max(1, Math.min(200, +$("ntok").value || 20))));
+$("genEnd").addEventListener("click", () => run(UNTIL_END));
 $("ntok").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gen").click(); });
 $("cont").addEventListener("click", (e) => {
   if (e.target.id !== "append" || !data) return;

@@ -137,6 +137,62 @@ class BonsaiMLX:
             out.append(float(rec @ rec / (H[t] @ H[t])))
         return out
 
+    # ------------------------------------------------------- non-verbal atoms
+    def load_atoms(self, path: str | Path):
+        """Atom dictionary from scripts/train_atoms.py (TopK SAE on the non-verbal remainder)."""
+        import torch
+
+        sd = torch.load(str(path), map_location="cpu")
+        self.sae = {k: mx.array(sd[k].float().numpy()) for k in ("W_enc", "b_enc", "W_dec", "b_dec")}
+        self.sae.update(scale=float(sd["scale"]), k=int(sd["k"]), privileged=list(sd["privileged"]))
+
+    def nonverbal(self, h: mx.array, layer: int, n_tokens: int = 25, top_atoms: int = 4):
+        """Split each activation (row of h, layer ``layer``) in the lens's canonical basis into
+        verbal part (NNLS on its top lens tokens), privileged coordinates, and non-verbal
+        remainder, and encode the remainder with the atom dictionary.
+
+        Returns per row: shares of ||z||^2 (verbal / privileged / remainder) and the strongest
+        atoms as (atom, activation, share of ||z||^2 carried by that atom's contribution)."""
+        import numpy as np
+
+        z = h.astype(mx.float32) @ self.J[layer].astype(mx.float32).T if layer < self.n_layers - 1 else h.astype(mx.float32)
+        top = mx.argsort(-self.readout(h, layer, "jacobian"), axis=-1)[:, :n_tokens]
+        gamma = self.lm.model.norm.weight.astype(mx.float32)
+        U = (self.readout_rows(top.reshape(-1).tolist()) * gamma).reshape(*top.shape, -1)  # [T, K, d]
+        Z, A = np.array(z, dtype=np.float64), np.array(U, dtype=np.float64)
+        verbal = np.zeros_like(Z)
+        for t in range(len(Z)):  # small NNLS per position (same recipe as the dictionary's training data)
+            keep = np.arange(A.shape[1])
+            fit = lambda k: np.linalg.solve(A[t, k] @ A[t, k].T + 1e-4 * np.trace(A[t, k] @ A[t, k].T) / len(k) * np.eye(len(k)), A[t, k] @ Z[t])
+            c = fit(keep)
+            for _ in range(5):
+                if (c >= 0).all() or not (c > 0).any():
+                    break
+                keep = keep[c > 0]; c = fit(keep)
+            verbal[t] = A[t, keep].T @ np.maximum(c, 0)
+        r = Z - verbal
+        P = self.sae["privileged"]
+        priv = (r[:, P] ** 2).sum(-1)
+        r[:, P] = 0
+        zz = (Z * Z).sum(-1)
+        sc = self.sae["scale"]
+        x = mx.array(r.astype(np.float32)) * sc
+        pre = mx.maximum((x - self.sae["b_dec"]) @ self.sae["W_enc"].T + self.sae["b_enc"], 0)
+        idx = mx.argsort(-pre, axis=-1)[:, : self.sae["k"]]
+        act = mx.take_along_axis(pre, idx, axis=-1)
+        W = np.array(self.sae["W_dec"])  # [d, n] unit columns
+        idx, act = np.array(idx), np.array(act)
+        out = []
+        for t in range(len(Z)):
+            contrib = (act[t] / sc) ** 2 * (W[:, idx[t]] ** 2).sum(0)  # ||a_j w_j||^2 in z units
+            order = np.argsort(-contrib)[:top_atoms]
+            out.append({
+                "verbal": float((verbal[t] ** 2).sum() / zz[t]), "priv": float(priv[t] / zz[t]),
+                "rest": float((r[t] ** 2).sum() / zz[t]),
+                "atoms": [[int(idx[t, j]), round(float(act[t, j]), 3), round(float(contrib[j] / zz[t]), 5)] for j in order],
+            })
+        return out
+
     # -------------------------------------------------------------- forward
     def residuals(self, ids: list[int]) -> mx.array:
         """[n_layers, T, d] residual stream after each block (fp16)."""
