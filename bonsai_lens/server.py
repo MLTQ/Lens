@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 import mlx.core as mx
+import numpy as np
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -113,7 +114,7 @@ def index():
     from fastapi.responses import HTMLResponse
 
     html = (STATIC / "index.html").read_text()
-    for name in ("volume.js", "space.js"):
+    for name in ("volume.js", "space.js", "kv.js"):
         html = html.replace(f'src="/static/{name}"', f'src="/static/{name}?v={int((STATIC / name).stat().st_mtime)}"')
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
@@ -417,6 +418,272 @@ def nonverbal(lo: int = 16, hi: int = 62, top: int = 4):
         layers = list(range(max(lo, 0), min(hi, m.n_layers - 2) + 1))
         cells = {l: m.nonverbal(last["hs"][l], l, top_atoms=top) for l in layers}
         return {"layers": layers, "cells": cells, "ms": round((time.time() - t0) * 1000)}
+
+
+# ---------------------------------------------------------------- attention / memory flow
+ATTN_MAX_T = 192
+
+
+def _b64(a) -> str:
+    import base64
+
+    return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
+
+
+def _layer_input(m: BonsaiMLX, ids, hs, l):
+    if l == 0:
+        return m.lm.model.embed_tokens(mx.array([ids]))[0]
+    return hs[l - 1]
+
+
+def _decode_rows(m: BonsaiMLX, vecs, l, k=4):
+    """J-lens words for residual-space contribution vectors added at layer l."""
+    logits = m.readout(vecs, l, "jacobian" if l < m.n_layers - 1 else "logit")
+    top = mx.argsort(-logits, axis=-1)[:, :k].tolist()
+    return [[m.decode_token(i) for i in row] for row in top]
+
+
+def _dec(m, l):
+    """Decomposition of layer l for the last run, cached (a few layers) for hovering and clicking."""
+    last = S["last"]
+    cache = S.setdefault("dec_cache", {})
+    key = (id(last), l)
+    if key not in cache:
+        if len(cache) >= 6:
+            cache.pop(next(iter(cache)))
+        an = _analysis(m)
+        dec = an.mixer(_layer_input(m, last["ids"], last["hs"], l), l)
+        dec["N"] = an.norms(l, dec)
+        cache[key] = dec
+    return cache[key]
+
+
+def _analysis(m):
+    from bonsai_lens.attention import MixerAnalysis
+
+    if "an" not in S:
+        S["an"] = MixerAnalysis(m)
+    return S["an"]
+
+
+@app.post("/api/attention")
+@on_mlx
+def attention():
+    """Per layer: every head's top-3 sources for each destination (share of that layer's total
+    contribution into the destination), merged top-5, how strongly the layer writes at each
+    position, the exactness check, and the strongest cross-position messages decoded into words."""
+    import numpy as np
+
+    m: BonsaiMLX = S["model"]
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    ids, hs = last["ids"], last["hs"]
+    T = len(ids)
+    if T > ATTN_MAX_T:
+        return {"error": f"attention views support up to {ATTN_MAX_T} tokens (this run has {T})"}
+    if S.get("attn_key") is last:
+        return S["attn"]
+    with _lock:
+        t0 = time.time()
+        an = _analysis(m)
+        layers, flow = [], []
+        K, KM, FLOW_PER_LAYER = 3, 5, 10
+        for l in range(m.n_layers):
+            x_in = _layer_input(m, ids, hs, l)
+            dec = an.mixer(x_in, l)
+            N = an.norms(l, dec)  # [H, T, T]
+            H = N.shape[0]
+            tot = N.sum(axis=(0, 2)) + 1e-9  # [T]
+            order = np.argsort(-N, axis=2)[:, :, :K]  # [H, T, K]
+            share = np.take_along_axis(N, order, 2) / tot[None, :, None]
+            sign = np.sign(np.take_along_axis(dec["w"], order, 2)).astype(np.int8)
+            Mg = N.sum(0)
+            morder = np.argsort(-Mg, axis=1)[:, :KM]
+            mshare = np.take_along_axis(Mg, morder, 1) / tot[:, None]
+            rec = an.reconstruct(l, dec)
+            err = float(np.linalg.norm(rec - dec["ref"]) / (np.linalg.norm(dec["ref"]) + 1e-9))
+            xin = np.array(x_in.astype(mx.float32))
+            strength = np.linalg.norm(dec["ref"], axis=-1) / (np.linalg.norm(xin, axis=-1) + 1e-9)
+            # strongest cross-position messages in this layer, relative to the residual they land in
+            resid = np.linalg.norm(np.array(hs[l].astype(mx.float32)), axis=-1) + 1e-9
+            rel = Mg / resid[:, None]
+            np.fill_diagonal(rel, 0)
+            flat = np.argsort(-rel, axis=None)[:FLOW_PER_LAYER]
+            cand = [(int(i // T), int(i % T)) for i in flat if rel.flat[i] > 0]
+            if cand:
+                # exact merged contribution vectors, decoded into words at this layer
+                words = [_decode_rows(m, an.contributions(l, dec, t_, [(None, s_)]), l, 3)[0] for t_, s_ in cand]
+                for (t_, s_), w_ in zip(cand, words):
+                    flow.append({"l": l, "t": t_, "s": s_, "rel": round(float(rel[t_, s_]), 4),
+                                 "share": round(float(Mg[t_, s_] / tot[t_]), 4), "words": w_})
+            layers.append({
+                **an.describe(l), "layer": l,
+                "src": _b64(order.astype(np.uint16)), "share": _b64(share.astype(np.float32)),
+                "sign": _b64(sign), "msrc": _b64(morder.astype(np.uint16)), "mshare": _b64(mshare.astype(np.float32)),
+                "self": _b64((np.einsum("htt->ht", N) / tot[None]).astype(np.float32)),
+                "strength": [round(float(x), 4) for x in strength], "check": round(err, 5),
+            })
+        flow.sort(key=lambda f: -f["rel"])
+        out = {"T": T, "K": K, "KM": KM, "layers": layers, "flow": flow[:400],
+               "ms": round((time.time() - t0) * 1000),
+               "max_check": max(L_["check"] for L_ in layers)}
+        S["attn"], S["attn_key"] = out, last
+        return out
+
+
+@app.get("/api/attn_cell")
+@on_mlx
+def attn_cell(l: int, t: int, heads: int = 16):
+    """What flows into (layer l, position t): merged top sources and the strongest heads' top
+    sources, each with the exact contributed vector decoded into words by the J-lens."""
+    import numpy as np
+
+    m: BonsaiMLX = S["model"]
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    with _lock:
+        an = _analysis(m)
+        ids, hs = last["ids"], last["hs"]
+        dec = _dec(m, l)
+        N = dec["N"][:, t, : t + 1]  # [H, t+1]
+        tot = float(N.sum()) + 1e-9
+        Mg = N.sum(0)
+        msrc = [int(s_) for s_ in np.argsort(-Mg)[:6]]
+        hsum = N.sum(1)
+        hord = [int(h) for h in np.argsort(-hsum)[:heads]]
+        pairs = [(None, s_) for s_ in msrc] + [(h, int(s_)) for h in hord for s_ in np.argsort(-N[h])[:3]]
+        vecs = an.contributions(l, dec, t, pairs)
+        words = _decode_rows(m, vecs, l, 4)
+        merged = [{"s": s_, "share": round(float(Mg[s_] / tot), 4), "words": words[i]} for i, s_ in enumerate(msrc)]
+        per_head, j = [], len(msrc)
+        for h in hord:
+            srcs = []
+            for s_ in np.argsort(-N[h])[:3]:
+                srcs.append({"s": int(s_), "share": round(float(N[h, s_] / tot), 4),
+                             "sign": int(np.sign(dec["w"][h, t, s_])), "weight": round(float(dec["w"][h, t, s_]), 4),
+                             "words": words[j]})
+                j += 1
+            per_head.append({"h": h, "share": round(float(hsum[h] / tot), 4), "sources": srcs})
+        xin = np.array(_layer_input(m, ids, hs, l)[t].astype(mx.float32))
+        return {"l": l, "t": t, **an.describe(l), "merged": merged, "heads": per_head,
+                "self_share": round(float(Mg[t] / tot), 4),
+                "strength": round(float(np.linalg.norm(dec["ref"][t]) / (np.linalg.norm(xin) + 1e-9)), 4)}
+
+
+@app.get("/api/kv")
+@on_mlx
+def kv(l: int, t: int, h: int = -1, top: int = 6):
+    """KV-space geometry of one head for destination t: keys in the query's frame, weights used,
+    contribution shares, and what the strongest sources carried (decoded)."""
+    import numpy as np
+    from bonsai_lens.attention import kv_geometry
+
+    m: BonsaiMLX = S["model"]
+    last = S["last"]
+    if last is None:
+        return {"error": "run a prompt first"}
+    with _lock:
+        an = _analysis(m)
+        dec = _dec(m, l)
+        d = an.describe(l)
+        cell = dec["N"][:, t, : t + 1]  # [H, t+1]
+        tot_cell = float(cell.sum()) + 1e-9
+        hsum = cell.sum(1)
+        ranking = [[int(x), round(float(hsum[x]) / tot_cell, 4)] for x in np.argsort(-hsum)]
+        if h < 0:
+            h = ranking[0][0]  # strongest head for this cell
+        scale = m.lm.model.layers[l].self_attn.scale if d["kind"] == "attn" else 1.0
+        geo = kv_geometry(dec, h, t, scale)
+        N = cell[h]
+        order = [int(s_) for s_ in np.argsort(-N)[:top]]
+        words = _decode_rows(m, an.contributions(l, dec, t, [(h, s_) for s_ in order]), l, 3)
+        return {"l": l, "t": t, "h": h, **d, **geo, "ranking": ranking, "scale": float(scale),
+                "share": [round(float(x) / tot_cell, 5) for x in N],
+                "head_share": round(float(N.sum()) / tot_cell, 4),
+                "top": [{"s": s_, "words": w_} for s_, w_ in zip(order, words)]}
+
+
+@app.get("/api/kv_heads")
+@on_mlx
+def kv_heads(l: int, t: int):
+    """Every head's view of destination t at layer l, for the disk small-multiples: per head the
+    match of each key with the query, the key's direction orthogonal to the query (2 PCs), the
+    weight actually used, and the head's share of what the layer brings into t."""
+    import numpy as np
+    from bonsai_lens.attention import kv_geometry
+
+    m: BonsaiMLX = S["model"]
+    if S["last"] is None:
+        return {"error": "run a prompt first"}
+    with _lock:
+        an = _analysis(m)
+        dec = _dec(m, l)
+        d = an.describe(l)
+        scale = float(m.lm.model.layers[l].self_attn.scale) if d["kind"] == "attn" else 1.0
+        cell = dec["N"][:, t, : t + 1]
+        tot = float(cell.sum()) + 1e-9
+        heads = []
+        for h in range(cell.shape[0]):
+            g = kv_geometry(dec, h, t, scale)
+            heads.append({"h": h, "share": round(float(cell[h].sum()) / tot, 4),
+                          "x": [round(v, 4) for v in g["x"]], "y": [round(v, 4) for v in g["y"]], "z": [round(v, 4) for v in g["z"]],
+                          "w": [round(v, 6) for v in g["weight"]], "logit": [round(v, 4) for v in g["logit"]], "q_norm": g["q_norm"]})
+        heads.sort(key=lambda x: -x["share"])
+        return {"l": l, "t": t, **d, "scale": scale, "heads": heads}
+
+
+@app.get("/api/kv_track")
+@on_mlx
+def kv_track(l: int, h: int):
+    """One head's keys from every position's query, for playback of the number line / 3D view."""
+    import numpy as np
+    from bonsai_lens.attention import kv_geometry
+
+    m: BonsaiMLX = S["model"]
+    if S["last"] is None:
+        return {"error": "run a prompt first"}
+    with _lock:
+        an = _analysis(m)
+        dec = _dec(m, l)
+        d = an.describe(l)
+        scale = float(m.lm.model.layers[l].self_attn.scale) if d["kind"] == "attn" else 1.0
+        frames = []
+        for t in range(dec["w"].shape[1]):
+            g = kv_geometry(dec, h, t, scale)
+            cell = dec["N"][:, t, : t + 1]
+            tot = float(cell.sum()) + 1e-9
+            frames.append({"x": [round(v, 4) for v in g["x"]], "y": [round(v, 4) for v in g["y"]], "z": [round(v, 4) for v in g["z"]],
+                           "weight": [round(v, 6) for v in g["weight"]], "logit": [round(v, 4) for v in g["logit"]],
+                           "q_norm": g["q_norm"], "share": [round(float(v) / tot, 5) for v in cell[h]],
+                           "head_share": round(float(cell[h].sum()) / tot, 4)})
+        return {"l": l, "h": h, **d, "scale": scale, "frames": frames}
+
+
+@app.get("/api/attn_msg")
+@on_mlx
+def attn_msg(l: int, t: int, s: int, h: int = -1):
+    """One arc: what position s contributed to position t at layer l (head h, or all heads)."""
+    import numpy as np
+
+    m: BonsaiMLX = S["model"]
+    if S["last"] is None:
+        return {"error": "run a prompt first"}
+    with _lock:
+        an = _analysis(m)
+        dec = _dec(m, l)
+        cell = dec["N"][:, t, : t + 1]
+        tot = float(cell.sum()) + 1e-9
+        part = float(cell[:, s].sum() if h < 0 else cell[h, s])
+        vec = an.contributions(l, dec, t, [(None if h < 0 else h, s)])
+        resid = float(np.linalg.norm(np.array(S["last"]["hs"][l][t].astype(mx.float32)))) + 1e-9
+        words = _decode_rows(m, vec, l, 4)[0]
+        out = {"l": l, "t": t, "s": s, "h": h, **an.describe(l), "share": round(part / tot, 4),
+               "of_residual": round(float(np.linalg.norm(np.array(vec[0]))) / resid, 4), "words": words}
+        if h >= 0:
+            out["weight"] = round(float(dec["w"][h, t, s]), 5)
+        return out
 
 
 _SPACE: dict = {}

@@ -94,6 +94,23 @@ main { display: grid; grid-template-columns: 1fr 400px; flex: 1; min-height: 0; 
 .cand .d { font-style: italic; margin: 2px 0; }
 .cand .ctx { font: 11px/1.35 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 .cand .ctx mark { background: #d4ff0055; color: var(--ink); border-radius: 2px; }
+#attnbox { margin: 10px 0; }
+.attnhead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.attnhead h2 { margin: 6px 0 !important; }
+.attnseg button { font-size: 11px; padding: 2px 7px; }
+#attncell .src { color: var(--muted); font-size: 11px; }
+.arow { display: grid; grid-template-columns: 92px 1fr 44px; gap: 6px; align-items: center; margin: 2px 0; font: 11px var(--mono); }
+.arow .tk { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.arow .bar { height: 12px; }
+.arow .w { color: var(--muted); font-size: 10px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.ahead { border-top: 1px solid var(--line); padding: 3px 0; }
+.ahead .hid { font: 600 11px var(--mono); }
+.ahead .hsrc { font: 11px var(--mono); color: var(--muted); margin-left: 8px; white-space: pre-wrap; }
+.kindtag { font: 600 10px var(--mono); padding: 1px 5px; border-radius: 3px; }
+.kindtag.attn { background: #ff8c3a33; color: #ff9d57; }
+.kindtag.gdn { background: #3ac8ff33; color: #57d0ff; }
+#attnsvg { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 1; }
+#attnsvg text { font: 10px ui-monospace, monospace; fill: var(--ink); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
 .pbctl { display: inline-flex; gap: 4px; align-items: center; }
 .splab.cur { background: #fff; color: #111; font-weight: 700; }
 .reglab { font: 600 11px -apple-system, system-ui, sans-serif; color: var(--ink); white-space: nowrap; pointer-events: none;
@@ -124,6 +141,32 @@ main { display: grid; grid-template-columns: 1fr 400px; flex: 1; min-height: 0; 
 .vlab.tok { transform: rotate(-50deg); transform-origin: right center; margin-left: -100%; color: var(--ink); }
 .vlab.tok.gen { color: hsl(var(--heat)); font-style: italic; }
 .vlab.rank { font-size: 9px; }
+.vlab.kvtok { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.vlab.kvtok.strong { color: var(--ink); font-weight: 600; background: color-mix(in srgb, var(--panel) 70%, transparent); padding: 0 3px; border-radius: 3px; }
+.vlab .kvw { color: #b6d800; font-weight: 400; }
+.vlab.kvq { color: var(--ink); font-size: 11px; }
+#kvwrap canvas { display: block; cursor: grab; }
+.kvhelp { position: absolute; left: 10px; bottom: 8px; z-index: 2; max-width: min(460px, 70%); font-size: 11px; line-height: 1.4;
+  background: color-mix(in srgb, var(--panel) 90%, transparent); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; color: var(--ink); }
+.kvhelp summary { cursor: pointer; color: var(--muted); }
+.kvhelp div { margin-top: 3px; }
+.vlab.kvtick { color: var(--muted); font-size: 10px; margin-top: 12px; }
+.vlab.kvtick.up { margin-top: -12px; }
+.vlab.kvzero { color: var(--muted); font-size: 10px; }
+#kvdisks { position: absolute; left: 0; right: 0; bottom: 0; overflow: auto; display: none; z-index: 1; padding: 6px 10px 140px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; background: var(--bg); }
+.kvdisk { border: 1px solid var(--line); border-radius: 8px; padding: 4px; cursor: pointer; font: 10px var(--mono); color: var(--muted); }
+.kvdisk:hover { border-color: var(--ink); }
+.kvdisk g.k { transition: transform var(--kvdur, .55s) ease, opacity var(--kvdur, .55s); }
+.kvdisk g.k circle, .kvdisk circle.zero { transition: r var(--kvdur, .55s) ease; }
+.kvdisk .hd { display: flex; justify-content: space-between; gap: 6px; color: var(--ink); }
+.kvdisk .hd b { font-weight: 600; }
+.kvdisk svg { display: block; width: 100%; height: auto; overflow: visible; }
+.kvdisk svg text { font: 9px var(--mono); fill: var(--ink); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.kvdisk .top { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kvstatus { position: absolute; inset: 0; display: none; flex-direction: column; gap: 6px; align-items: center; justify-content: center;
+  text-align: center; font-size: 13px; color: var(--ink); pointer-events: none; z-index: 2; padding: 0 20px; }
+.vlab.flowlab { color: var(--ink); font-size: 10px; background: color-mix(in srgb, var(--panel) 75%, transparent); padding: 0 4px; border-radius: 3px; }
 table { border-collapse: separate; border-spacing: 0; font: 11px/1 var(--mono); }
 th, td { white-space: nowrap; }
 thead th { position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 6px 4px;
@@ -191,22 +234,55 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
     </div>
   </div>
   <div class="seg" role="tablist" aria-label="View">
-    <button id="vGrid" class="on">Grid</button><button id="vVol">J-Volume</button><button id="vSpace">Space</button>
+    <button id="vGrid" class="on">Grid</button><button id="vVol">J-Volume</button><button id="vSpace">Space</button><button id="vKV" title="One head's keys seen from the selected cell's query">KV</button>
   </div>
   <div id="cont"></div>
   <div class="status" id="status" style="flex-basis:100%"></div>
 </header>
 <main>
   <div id="left">
-    <div id="gridwrap"><table id="grid"></table></div>
+    <div id="gridwrap"><table id="grid"></table><svg id="attnsvg"></svg></div>
     <div id="volwrap">
       <div class="vctl">
         <label>color <select id="vcolor"><option value="prob">probability</option><option value="token">token identity</option></select></label>
         <label>show <input type="range" id="vthr" min="0" max="100" value="33" style="width:110px"> <span id="vthrv"></span></label>
         <label><input type="checkbox" id="vactual"> highlight actual tokens</label>
+        <label title="Draw each layer's strongest cross-position contributions (attention and DeltaNet memory) as arcs; the total is split equally across layers"><input type="checkbox" id="vflow"> attention flow: strongest
+          <input type="number" id="vflowmin" min="10" max="3000" step="10" value="250" style="width:56px"> arcs</label>
         <button id="vreset">reset view</button>
       </div>
       <div class="vhelp" id="volhelp">x = position · y = layer (L0 bottom → output top) · z = rank (1 in front) · drag to orbit, scroll to zoom, click a voxel to select</div>
+    </div>
+    <div id="kvwrap" style="position:absolute; inset:0; display:none; overflow:hidden;">
+      <div class="vctl">
+        <select id="kvhead" title="Heads for the selected cell, strongest first"></select>
+        <select id="kvcam" title="All heads: one disk per head, seen down the query. Number line: one head, the query axis left to right, nearly to scale. 3D: orbit freely."><option value="disks">all heads (disks)</option><option value="front">one head: number line</option><option value="3d">one head: 3D orbit</option></select>
+        <button id="kvplay" title="Play: step the query through every token of the prompt at this layer">▶</button>
+        <input type="range" id="kvt" min="0" max="0" value="0" step="1" title="Query position (scrub)" style="width:160px">
+        <span id="kvtlab" style="font-size:12px; min-width:70px"></span>
+        <select id="kvspeed" title="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+        <label title="Keep the chosen head when you select another cell"><input type="checkbox" id="kvkeep"> keep head</label>
+        <button id="kvreset">reset view</button>
+        <span id="kvtitle" style="flex-basis:100%; font-size:12px"></span>
+      </div>
+      <div id="kvdisks"></div>
+      <details class="kvhelp" id="kvhelpdisk"><summary>how to read the disks</summary>
+        <div>One disk per head, strongest first. You are looking <b>down the query</b>: the centre is its tip.</div>
+        <div><b>Distance from the centre</b> = attention the key gets, on a hyperbolic scale: the centre would take all of it, every e-fold less is an equal step outward, and the rim is none.
+          Rings: 50 / 10 / 1 / 0.1%. Dashed ring (softmax heads) = zero match; keys outside it are anti-matched.</div>
+        <div><b>Angle</b> = which way a key deviates from the query (its two main directions of variation), so keys that miss in the same way sit together. It doesn't affect attention.</div>
+        <div><b>Colour</b> = position in the prompt · <b>click a disk</b> for that head's number line.</div>
+        <div class="muted">Memory (DeltaNet) heads: distance uses each source's share of the head's effective weight (after decay and overwriting), not the raw match; hollow red = net negative.</div>
+      </details>
+      <details class="kvhelp" id="kvhelpone" open><summary>how to read this</summary>
+        <div><b>The arrow</b> is the query of the selected token: what this head is looking for.</div>
+        <div><b>Left → right along the arrow</b> = how well each earlier token's key matches that query (the only axis to scale).
+          Ticks mark the attention weight a key would get at that point (softmax heads).</div>
+        <div><b>The line at 0</b> is zero match: keys near it are ignored by this query.</div>
+        <div><b>Up/down (and depth in 3D)</b> only spreads tokens by how similar their keys are; it doesn't affect attention.</div>
+        <div><b>Size</b> = weight actually used · <b>colour</b> = position in the prompt · labels give what the strongest sources carried.</div>
+        <div class="muted">Memory (DeltaNet) heads: the weight used also depends on decay and overwriting since the key was written, so a key can match and still be small; red ring = net negative.</div>
+      </details>
     </div>
     <div id="spacewrap">
       <div class="vctl">
@@ -248,6 +324,14 @@ th.gen0, td.gen0 { border-left: 2px solid hsl(var(--heat)) !important; }
   </div>
   <aside>
     <div id="detail" class="muted">Run a prompt, then click a cell to see the lens readout at that layer and position.</div>
+    <div id="attnbox">
+      <div class="attnhead"><h2 style="display:inline">Reads from earlier positions</h2>
+        <span class="seg attnseg"><button id="atHeads" class="on" title="One arc per head (colour = head)">per head</button><button id="atMerged" title="Heads summed">merged</button></span>
+        <label class="muted" title="Draw attention/memory arcs on the grid and J-Volume"><input type="checkbox" id="atOn" checked> arcs</label>
+        <label class="muted" title="Hide arcs carrying less than this share of the cell's incoming contribution">≥ <input type="number" id="atMin" min="0" max="50" step="0.5" value="3" style="width:42px">%</label>
+      </div>
+      <div id="attncell" class="muted">Select a cell to see where its layer pulled information from.</div>
+    </div>
     <div id="kobox" style="display:none"></div>
     <div id="colmap"></div>
     <details id="cands" style="display:none">
@@ -367,6 +451,7 @@ function render() {
     h += `</tr>`;
   });
   g.innerHTML = h + `</tbody>`;
+  setTimeout(drawGridArcs, 0);
   renderLegend();
 }
 
@@ -597,8 +682,121 @@ $("kobox").addEventListener("click", (e) => {
   if (e.target.id === "koClose") $("kobox").style.display = "none";
 });
 
+// ---- attention / memory: what each cell's layer read from earlier positions ----
+// /api/attention decomposes every layer's token mixer exactly into per-(head, source) contributions
+// (softmax attention in 16 layers, Gated DeltaNet memory in 48); /api/attn_cell decodes one cell.
+let attn = null, attnPending = null;
+const atState = { on: true, merged: false, min: 0.03 };
+const unb64 = (str, T) => { const b = atob(str), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return new T(u.buffer); };
+async function ensureAttn() {
+  if (!data || data.knockout) return null;
+  if (attn && attn._data === data) return attn;
+  if (attnPending && attnPending._data === data) return attnPending;
+  const p = (async () => {
+    $("attncell").innerHTML = `<span class="muted">Decomposing every layer's attention and memory into per-source contributions…</span>`;
+    const r = await api("/api/attention", {});
+    if (r.error || r.detail) { $("attncell").textContent = r.error || JSON.stringify(r.detail); return null; }
+    for (const L of r.layers) {
+      L.srcA = unb64(L.src, Uint16Array); L.shareA = unb64(L.share, Float32Array); L.signA = unb64(L.sign, Int8Array);
+      L.msrcA = unb64(L.msrc, Uint16Array); L.mshareA = unb64(L.mshare, Float32Array); L.selfA = unb64(L.self, Float32Array);
+    }
+    r._data = data; attn = r;
+    window.dispatchEvent(new Event("lens:attn"));
+    return r;
+  })();
+  p._data = data; attnPending = p;
+  return p;
+}
+const headHue = (h, H) => Math.round((h / H) * 330);
+// Size of a layer's write relative to the residual it reads: "19%" when small, "8.8×" when larger
+// (early layers write into a residual that is still just the token embedding).
+const ratio = (x) => (x < 1.5 ? `${(x * 100).toFixed(0)}%` : `${x.toFixed(1)}×`);
+// Arcs into (layer li, position t): per head (top sources above threshold) or merged.
+function attnArcs(li, t) {
+  if (!attn || attn._data !== data) return [];
+  const l = data.layers[li], L = attn.layers[l], T = attn.T, K = attn.K, KM = attn.KM, arcs = [];
+  if (!L || t >= T) return [];
+  if (atState.merged) {
+    for (let k = 0; k < KM; k++) {
+      const s = L.msrcA[t * KM + k], sh = L.mshareA[t * KM + k];
+      if (sh >= atState.min) arcs.push({ s, t, share: sh, hue: null, sign: 1, merged: true });
+    }
+  } else {
+    for (let h = 0; h < L.heads; h++) for (let k = 0; k < K; k++) {
+      const j = (h * T + t) * K + k, s = L.srcA[j], sh = L.shareA[j];
+      if (sh >= atState.min) arcs.push({ s, t, share: sh, hue: headHue(h, L.heads), h, sign: L.signA[j] });
+    }
+  }
+  return arcs;
+}
+function drawGridArcs() {
+  const svg = $("attnsvg"), tbl = $("grid");
+  svg.innerHTML = "";
+  if (!atState.on || !sel || !data || $("gridwrap").style.display === "none") return;
+  const [li, t] = sel;
+  const arcs = attnArcs(li, t);
+  svg.setAttribute("width", tbl.scrollWidth); svg.setAttribute("height", tbl.scrollHeight);
+  svg.style.left = tbl.offsetLeft + "px"; svg.style.top = tbl.offsetTop + "px";
+  const tr = tbl.getBoundingClientRect();
+  const cell = (tt) => { const td = tbl.querySelector(`td[data-li="${li}"][data-t="${tt}"]`); if (!td) return null; const r = td.getBoundingClientRect(); return [r.left - tr.left + r.width / 2, r.top - tr.top + r.height / 2]; };
+  const dst = cell(t); if (!dst) return;
+  let html = "";
+  const accent = css("--accent");
+  for (const a of arcs.sort((x, y) => x.share - y.share)) {
+    const col = a.hue === null ? `hsl(${accent})` : `hsl(${a.hue} 85% 60%)`;
+    const w = (a.merged ? 1.5 + 14 * a.share : 1 + 10 * a.share).toFixed(1), op = Math.min(0.95, 0.35 + a.share * 2).toFixed(2);
+    const dash = a.sign < 0 ? ` stroke-dasharray="4 3"` : "";
+    if (a.s === t) {  // reads its own position: a small loop
+      html += `<circle cx="${dst[0]}" cy="${dst[1] - 11}" r="${4 + 10 * a.share}" fill="none" stroke="${col}" stroke-width="${w}" opacity="${op}"${dash}/>`;
+      continue;
+    }
+    const src = cell(a.s); if (!src) continue;
+    const mx = (src[0] + dst[0]) / 2, hgt = Math.min(140, 14 + Math.abs(dst[0] - src[0]) * 0.33);
+    html += `<path d="M${src[0]},${src[1]} Q${mx},${src[1] - 2 * hgt} ${dst[0]},${dst[1]}" fill="none" stroke="${col}" stroke-width="${w}" opacity="${op}" stroke-linecap="round"${dash}/>`;
+  }
+  svg.innerHTML = html;
+}
+let cellReq = 0;
+async function renderAttnCell() {
+  const box = $("attncell");
+  if (!sel || !data) return;
+  if (data.knockout) { box.innerHTML = `<span class="muted">Attention is shown for the original run, not the knockout view.</span>`; return; }
+  const a = await ensureAttn();
+  drawGridArcs();
+  if (!a) return;
+  const [li, t] = sel, l = data.layers[li], my = ++cellReq;
+  const L = a.layers[l];
+  box.innerHTML = `<div><span class="kindtag ${L.kind}">${L.kind === "gdn" ? "DeltaNet memory" : "softmax attention"}</span>
+    <b> L${l}</b> into position ${t} <span class="muted">(${esc(show(data.tokens[t]))})</span></div>
+    <div class="src">${L.kind === "gdn" ? `${L.heads} memory heads (each a 128×128 memory written by every earlier token, with decay and overwriting; weights are exact effective contributions, dashed = negative)` : `${L.heads} query heads sharing ${L.kv_heads} key/value heads`} ·
+      this layer's write here is ${ratio(L.strength[t])} the size of the residual it reads</div>
+    <div class="muted" style="margin-top:4px">decoding what each source carried…</div>`;
+  const r = await api(`/api/attn_cell?l=${l}&t=${t}&heads=16`);
+  if (my !== cellReq || r.error || r.detail) return;
+  const bar = (sh) => `<div class="bar"><span style="width:${Math.min(100, sh * 100).toFixed(1)}%"></span></div>`;
+  const tokAt = (s) => esc(show(data.tokens[s]));
+  const wordsOf = (ws) => esc(ws.map((w) => show(w)).join(" · "));
+  box.innerHTML = box.innerHTML.replace(/<div class="muted" style="margin-top:4px">decoding[^<]*<\/div>/, "") +
+    `<h2>Merged over heads</h2>` + r.merged.map((m) => `<div class="arow"><span class="tk">${m.s === t ? "(itself)" : `${m.s}: ${tokAt(m.s)}`}</span>${bar(m.share)}<span>${(m.share * 100).toFixed(0)}%</span></div>
+      <div class="arow" style="margin-top:-2px"><span></span><span class="w">carries: ${wordsOf(m.words)}</span><span></span></div>`).join("") +
+    `<h2>Strongest heads <span class="muted" style="text-transform:none;font-weight:400">(click to see its KV space)</span></h2>` + r.heads.map((h) => `<div class="ahead" data-head="${h.h}" style="cursor:pointer"><span class="hid" style="color:hsl(${headHue(h.h, L.heads)} 85% 60%)">head ${h.h}</span>
+      <span class="muted"> ${(h.share * 100).toFixed(0)}% of the incoming contribution</span>
+      ${h.sources.map((s) => `<div class="hsrc">${s.sign < 0 ? "−" : "←"} ${s.s === t ? "(itself)" : `${s.s} ${tokAt(s.s)}`}  ${(s.share * 100).toFixed(1)}%  ${wordsOf(s.words)}</div>`).join("")}</div>`).join("");
+}
+$("atHeads").onclick = () => { atState.merged = false; $("atHeads").classList.add("on"); $("atMerged").classList.remove("on"); drawGridArcs(); window.dispatchEvent(new Event("lens:attn")); };
+$("atMerged").onclick = () => { atState.merged = true; $("atMerged").classList.add("on"); $("atHeads").classList.remove("on"); drawGridArcs(); window.dispatchEvent(new Event("lens:attn")); };
+$("atOn").onchange = (e) => { atState.on = e.target.checked; drawGridArcs(); window.dispatchEvent(new Event("lens:attn")); };
+$("atMin").onchange = (e) => { atState.min = Math.max(0, +e.target.value || 0) / 100; drawGridArcs(); window.dispatchEvent(new Event("lens:attn")); };
+window.addEventListener("lens:select", () => { if (atState.on) renderAttnCell(); });
+$("attncell").addEventListener("click", (e) => {
+  const el = e.target.closest(".ahead[data-head]"); if (!el) return;
+  setView("kv");
+  window.dispatchEvent(new CustomEvent("lens:kvhead", { detail: +el.dataset.head }));
+});
+
 // ---- view switch + bridge for the J-Volume module ----
 window.lensUI = {
+  get attn() { return attn && attn._data === data ? attn : null; }, get atState() { return atState; }, attnArcs, ensureAttn, headHue, ratio,
   get data() { return data; }, get sel() { return sel; }, get gloss() { return gloss; },
   selectCell, foreign, show, esc, css,
 };
@@ -606,16 +804,20 @@ function setView(v) {
   $("gridwrap").style.display = v === "grid" ? "" : "none";
   $("volwrap").style.display = v === "volume" ? "block" : "none";
   $("spacewrap").style.display = v === "space" ? "block" : "none";
+  $("kvwrap").style.display = v === "kv" ? "block" : "none";
+  $("vKV").classList.toggle("on", v === "kv");
   $("vSpace").classList.toggle("on", v === "space");
   $("vGrid").classList.toggle("on", v === "grid"); $("vVol").classList.toggle("on", v === "volume");
   window.dispatchEvent(new CustomEvent("lens:view", { detail: v }));
 }
-$("vGrid").addEventListener("click", () => setView("grid"));
+$("vGrid").addEventListener("click", () => { setView("grid"); setTimeout(drawGridArcs, 0); });
 $("vVol").addEventListener("click", () => setView("volume"));
 $("vSpace").addEventListener("click", () => setView("space"));
+$("vKV").addEventListener("click", () => setView("kv"));
 info();
 </script>
 <script type="module" src="/static/volume.js"></script>
 <script type="module" src="/static/space.js"></script>
+<script type="module" src="/static/kv.js"></script>
 </body>
 </html>
